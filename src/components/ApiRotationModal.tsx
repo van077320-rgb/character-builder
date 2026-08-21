@@ -28,7 +28,7 @@ interface ServerStatus {
   totalKeysConfigured: number;
   /** Số key còn dùng được ngay lúc này (đã trừ key đang bị cách ly). */
   usableKeysNow?: number;
-  maskedKeys: Array<{ index: number; masked: string }>;
+  maskedKeys: Array<{ index: number; masked: string; length?: number }>;
   currentRoundRobinIndex: number;
   modelTiers: Array<{ id: string; name: string; tier: number; description: string }>;
   /** Key đang tạm nghỉ vì lỗi, kèm model bị ảnh hưởng và thời gian còn lại. */
@@ -36,6 +36,8 @@ interface ServerStatus {
     masked: string;
     model?: string | null;
     reason: string;
+    /** Nguyên văn lỗi Google trả về — nhãn phân loại không đủ để biết vì sao. */
+    detail?: string;
     secondsLeft: number;
   }>;
   /** Key khai trong biến môi trường nhưng bị loại, kèm lý do. */
@@ -415,6 +417,26 @@ export const ApiRotationModal: React.FC<ApiRotationModalProps> = ({
               </div>
             </div>
 
+            {/* Danh sách key kèm độ dài. Key bị cắt lúc copy vẫn qua mọi bộ lọc
+                định dạng rồi ăn 401 — độ dài lệch hẳn so với key khác là dấu hiệu. */}
+            {statusData?.maskedKeys && statusData.maskedKeys.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {statusData.maskedKeys.map((k) => (
+                  <span
+                    key={k.index}
+                    className={`text-[10px] font-mono px-2 py-1 rounded-md border ${
+                      isDark ? "bg-slate-900 border-slate-800" : "bg-white border-sky-100"
+                    }`}
+                  >
+                    <span className="opacity-50">#{k.index}</span> {k.masked}
+                    {typeof k.length === "number" && (
+                      <span className="opacity-50"> · {k.length} ký tự</span>
+                    )}
+                  </span>
+                ))}
+              </div>
+            )}
+
             {/* Key đang tạm nghỉ — trước đây key bị loại vĩnh viễn mà không hiện ở đâu */}
             {statusData?.quarantinedKeys && statusData.quarantinedKeys.length > 0 && (
               <div className={`p-3 rounded-lg border space-y-1.5 ${
@@ -425,19 +447,22 @@ export const ApiRotationModal: React.FC<ApiRotationModalProps> = ({
                   <span>{statusData.quarantinedKeys.length} key đang tạm nghỉ (tự quay lại pool khi hết giờ)</span>
                 </div>
                 {statusData.quarantinedKeys.map((k) => (
-                  <div
-                    key={`${k.masked}#${k.model ?? "all"}`}
-                    className="flex items-center justify-between gap-2 text-[11px] pl-5"
-                  >
-                    <code className="font-mono opacity-80 truncate">
-                      {k.masked}
-                      {/* Hết quota là chuyện của riêng một model, key vẫn chạy ở model khác */}
-                      {k.model && <span className="opacity-60"> @ {k.model}</span>}
-                    </code>
-                    <span className="opacity-75 truncate">{k.reason}</span>
-                    <span className="shrink-0 font-semibold text-amber-600 dark:text-amber-400">
-                      còn {k.secondsLeft >= 60 ? `${Math.ceil(k.secondsLeft / 60)} phút` : `${k.secondsLeft}s`}
-                    </span>
+                  <div key={`${k.masked}#${k.model ?? "all"}`} className="pl-5 space-y-0.5">
+                    <div className="flex items-center justify-between gap-2 text-[11px]">
+                      <code className="font-mono opacity-80 truncate">
+                        {k.masked}
+                        {/* Hết quota là chuyện của riêng một model, key vẫn chạy ở model khác */}
+                        {k.model && <span className="opacity-60"> @ {k.model}</span>}
+                      </code>
+                      <span className="opacity-75 truncate">{k.reason}</span>
+                      <span className="shrink-0 font-semibold text-amber-600 dark:text-amber-400">
+                        còn {k.secondsLeft >= 60 ? `${Math.ceil(k.secondsLeft / 60)} phút` : `${k.secondsLeft}s`}
+                      </span>
+                    </div>
+                    {/* Nguyên văn lời Google — "401" không nói được vì sao 401 */}
+                    {k.detail && (
+                      <div className="text-[10px] opacity-60 font-mono break-words">{k.detail}</div>
+                    )}
                   </div>
                 ))}
               </div>

@@ -84,7 +84,7 @@ const stats: RotationStats = {
  * key cạn hạn mức ở gemini-3.7-flash vẫn còn nguyên hạn mức ở gemini-3.5-flash.
  * Cách ly cả key vì một lỗi 429 là tự tay vứt bỏ mấy tầng model dự phòng.
  */
-const quarantine = new Map<string, { until: number; reason: string }>();
+const quarantine = new Map<string, { until: number; reason: string; detail?: string }>();
 
 const MINUTE = 60_000;
 
@@ -107,14 +107,19 @@ function isDailyQuota(detail: string): boolean {
   return /per\s*day/i.test(detail);
 }
 
-function quarantineFor(id: string, kind: string, reason: string): void {
+/**
+ * @param detail Nguyên văn lỗi Google trả về. Nhãn phân loại ("bị từ chối xác
+ * thực (401)") chỉ nói *loại* lỗi chứ không nói *vì sao* — mà nguyên nhân thật
+ * nằm trong câu chữ của Google. Giữ lại để hiện thẳng lên modal.
+ */
+function quarantineFor(id: string, kind: string, reason: string, detail?: string): void {
   const ms = QUARANTINE_MS[kind];
   if (!ms) return;
-  quarantine.set(id, { until: Date.now() + ms, reason });
+  quarantine.set(id, { until: Date.now() + ms, reason, detail });
 }
 
 /** Trả về bản ghi cách ly còn hiệu lực, tự dọn bản ghi đã hết hạn. */
-function getQuarantine(id: string): { until: number; reason: string } | null {
+function getQuarantine(id: string): { until: number; reason: string; detail?: string } | null {
   const entry = quarantine.get(id);
   if (!entry) return null;
   if (Date.now() >= entry.until) {
@@ -477,7 +482,7 @@ export async function executeWithRotationAndFallback<T>(
 
         if (kind === "invalid-key" || kind === "unauthenticated" || kind === "key-forbidden") {
           stats.invalidKeyHits++;
-          quarantineFor(activeKey, kind, KIND_LABEL[kind]);
+          quarantineFor(activeKey, kind, KIND_LABEL[kind], message);
           deadKeys.add(activeKeyIndex);
           console.warn(
             `[Gemini] Key #${activeKeyIndex + 1} (${masked}) — ${KIND_LABEL[kind]}. ` +
@@ -494,7 +499,8 @@ export async function executeWithRotationAndFallback<T>(
           quarantineFor(
             scope,
             daily ? "quota-daily" : "quota",
-            daily ? "hết hạn mức theo ngày (429)" : KIND_LABEL[kind]
+            daily ? "hết hạn mức theo ngày (429)" : KIND_LABEL[kind],
+            message
           );
           console.warn(
             `[Gemini] Key #${activeKeyIndex + 1} (${masked}) hết quota trên ${currentModel}` +
@@ -606,6 +612,9 @@ export function getRotationStatus() {
         masked: maskApiKey(key),
         model: sep === -1 ? null : id.slice(sep + 1),
         reason: entry.reason,
+        // Cắt bớt cho vừa modal; thông báo lỗi của Google không chứa key nên
+        // đưa ra ngoài được. Không có dòng này thì chỉ biết "401", không biết vì sao.
+        detail: entry.detail ? entry.detail.slice(0, 300) : undefined,
         secondsLeft: Math.max(0, Math.ceil((entry.until - Date.now()) / 1000)),
       };
     })
@@ -619,7 +628,13 @@ export function getRotationStatus() {
     // vứt lặng lẽ: cắm 5 key, app chỉ thấy 2, không một dòng cảnh báo nào.
     ignoredKeys: ignored,
     duplicateKeySources: duplicateSources,
-    maskedKeys: keys.map((k, idx) => ({ index: idx + 1, masked: maskApiKey(k) })),
+    // Kèm độ dài: key bị cắt lúc copy/dán vẫn qua được mọi bộ lọc định dạng rồi
+    // ăn 401, và không có cách nào khác để nhìn ra. Độ dài không phải bí mật.
+    maskedKeys: keys.map((k, idx) => ({
+      index: idx + 1,
+      masked: maskApiKey(k),
+      length: k.length,
+    })),
     currentRoundRobinIndex: currentKeyIndex % (keys.length || 1),
     modelTiers: MODEL_FALLBACK_TIERS,
     // Key đang tạm nghỉ và bao lâu nữa quay lại — trước đây key bị loại vĩnh viễn
