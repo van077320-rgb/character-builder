@@ -48,6 +48,15 @@ PORT=3100 npm run dev
 | `PORT` | | Mặc định `3000`, chỉ dùng khi chạy local |
 
 Khai báo cả ba kiểu cũng được — hệ thống gộp lại, loại trùng và bỏ khoá sai định dạng.
+Khoá bị loại được liệt kê kèm lý do trong modal trạng thái (nút con chip trên thanh tiêu đề).
+
+**Định dạng khoá:** AI Studio phát hành cả `AIza...` (kiểu cũ) lẫn `AQ...` (kiểu mới,
+là thứ nút *Create API key* trả về hiện nay) — cả hai đều dùng được. Chỉ chuỗi
+`ya29...` / `Bearer ...` là OAuth access token, không phải API key.
+
+**Muốn nhân hạn mức thì mỗi khoá phải ở một Google Cloud project khác nhau.**
+Hạn mức miễn phí tính theo (project × model × ngày), nên năm khoá trong cùng một
+project vẫn chia nhau đúng một suất. Trong AI Studio, chọn *Create API key in new project*.
 
 ### Lệnh khác
 

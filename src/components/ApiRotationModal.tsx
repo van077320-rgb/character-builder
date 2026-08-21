@@ -26,11 +26,22 @@ interface ApiRotationModalProps {
 interface ServerStatus {
   status: string;
   totalKeysConfigured: number;
+  /** Số key còn dùng được ngay lúc này (đã trừ key đang bị cách ly). */
+  usableKeysNow?: number;
   maskedKeys: Array<{ index: number; masked: string }>;
   currentRoundRobinIndex: number;
   modelTiers: Array<{ id: string; name: string; tier: number; description: string }>;
-  /** Key đang tạm nghỉ vì lỗi, kèm thời gian còn lại. */
-  quarantinedKeys?: Array<{ masked: string; reason: string; secondsLeft: number }>;
+  /** Key đang tạm nghỉ vì lỗi, kèm model bị ảnh hưởng và thời gian còn lại. */
+  quarantinedKeys?: Array<{
+    masked: string;
+    model?: string | null;
+    reason: string;
+    secondsLeft: number;
+  }>;
+  /** Key khai trong biến môi trường nhưng bị loại, kèm lý do. */
+  ignoredKeys?: Array<{ source: string; masked: string; reason: string }>;
+  /** Biến môi trường trùng giá trị với key khác nên không tính thêm suất. */
+  duplicateKeySources?: string[];
   stats: {
     totalRequests: number;
     successfulRequests: number;
@@ -378,7 +389,10 @@ export const ApiRotationModal: React.FC<ApiRotationModalProps> = ({
                 Trạng Thái Key Pool & Thống Kê Vận Hành
               </span>
               <span className="text-xs px-2 py-0.5 rounded-full bg-sky-500/10 text-sky-500 font-semibold">
-                {statusData?.totalKeysConfigured || 1} API Key đang cấu hình
+                {typeof statusData?.usableKeysNow === "number" &&
+                statusData.usableKeysNow !== statusData.totalKeysConfigured
+                  ? `${statusData.usableKeysNow}/${statusData.totalKeysConfigured} API Key dùng được`
+                  : `${statusData?.totalKeysConfigured ?? 0} API Key đang cấu hình`}
               </span>
             </div>
 
@@ -411,14 +425,47 @@ export const ApiRotationModal: React.FC<ApiRotationModalProps> = ({
                   <span>{statusData.quarantinedKeys.length} key đang tạm nghỉ (tự quay lại pool khi hết giờ)</span>
                 </div>
                 {statusData.quarantinedKeys.map((k) => (
-                  <div key={k.masked} className="flex items-center justify-between gap-2 text-[11px] pl-5">
-                    <code className="font-mono opacity-80 truncate">{k.masked}</code>
+                  <div
+                    key={`${k.masked}#${k.model ?? "all"}`}
+                    className="flex items-center justify-between gap-2 text-[11px] pl-5"
+                  >
+                    <code className="font-mono opacity-80 truncate">
+                      {k.masked}
+                      {/* Hết quota là chuyện của riêng một model, key vẫn chạy ở model khác */}
+                      {k.model && <span className="opacity-60"> @ {k.model}</span>}
+                    </code>
                     <span className="opacity-75 truncate">{k.reason}</span>
                     <span className="shrink-0 font-semibold text-amber-600 dark:text-amber-400">
                       còn {k.secondsLeft >= 60 ? `${Math.ceil(k.secondsLeft / 60)} phút` : `${k.secondsLeft}s`}
                     </span>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* Key khai trong env nhưng bị loại — trước đây bị vứt lặng lẽ */}
+            {statusData?.ignoredKeys && statusData.ignoredKeys.length > 0 && (
+              <div className={`p-3 rounded-lg border space-y-1.5 ${
+                isDark ? "bg-rose-950/30 border-rose-800/60" : "bg-rose-50 border-rose-200"
+              }`}>
+                <div className="flex items-center gap-1.5 font-bold text-[11px] text-rose-600 dark:text-rose-400">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{statusData.ignoredKeys.length} key bị bỏ qua vì sai định dạng</span>
+                </div>
+                {statusData.ignoredKeys.map((k) => (
+                  <div key={k.source} className="text-[11px] pl-5">
+                    <code className="font-mono opacity-80">{k.source}</code>
+                    <span className="opacity-60"> ({k.masked}): </span>
+                    <span className="opacity-90">{k.reason}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {statusData?.duplicateKeySources && statusData.duplicateKeySources.length > 0 && (
+              <div className="text-[11px] opacity-75 pl-1">
+                Trùng giá trị với key khác nên không tính thêm suất:{" "}
+                <code className="font-mono">{statusData.duplicateKeySources.join(", ")}</code>
               </div>
             )}
 

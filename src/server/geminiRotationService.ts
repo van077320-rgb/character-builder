@@ -75,7 +75,15 @@ const stats: RotationStats = {
  * Nay mỗi loại lỗi có thời hạn cách ly riêng, hết hạn thì key tự quay lại pool.
  * ──────────────────────────────────────────────────────────── */
 
-/** key -> mốc hết cách ly (epoch ms) */
+/**
+ * id -> mốc hết cách ly (epoch ms). id có hai dạng:
+ *   "<key>"         — key hỏng ở mức xác thực, nghỉ với MỌI model.
+ *   "<key>#<model>" — key hết hạn mức của RIÊNG model đó.
+ *
+ * Quota của Gemini tính theo (project × model × ngày) chứ không theo key, nên
+ * key cạn hạn mức ở gemini-3.7-flash vẫn còn nguyên hạn mức ở gemini-3.5-flash.
+ * Cách ly cả key vì một lỗi 429 là tự tay vứt bỏ mấy tầng model dự phòng.
+ */
 const quarantine = new Map<string, { until: number; reason: string }>();
 
 const MINUTE = 60_000;
@@ -85,84 +93,128 @@ const QUARANTINE_MS: Record<string, number> = {
   "invalid-key": 6 * 60 * MINUTE, // key sai thật -> nghỉ lâu
   unauthenticated: 10 * MINUTE, // 401
   "key-forbidden": 5 * MINUTE, // 403 tạm thời -> nghỉ ngắn rồi thử lại
-  quota: 1 * MINUTE, // 429 -> chỉ cần né trong chốc lát
+  quota: 1 * MINUTE, // 429 theo phút (RPM) -> né trong chốc lát
+  "quota-daily": 60 * MINUTE, // 429 theo ngày -> thử lại sớm chỉ tổ đốt request
 };
 
-function quarantineKey(key: string, kind: string, reason: string): void {
+/** Phạm vi cách ly của lỗi quota: cặp (key, model), không phải cả key. */
+function quotaScope(key: string, model: string): string {
+  return `${key}#${model}`;
+}
+
+/** Hạn mức theo ngày cạn thì cả tiếng nữa cũng chưa về, khác hẳn giới hạn RPM. */
+function isDailyQuota(detail: string): boolean {
+  return /per\s*day/i.test(detail);
+}
+
+function quarantineFor(id: string, kind: string, reason: string): void {
   const ms = QUARANTINE_MS[kind];
   if (!ms) return;
-  quarantine.set(key, { until: Date.now() + ms, reason });
+  quarantine.set(id, { until: Date.now() + ms, reason });
 }
 
-function isQuarantined(key: string): boolean {
-  const entry = quarantine.get(key);
-  if (!entry) return false;
+/** Trả về bản ghi cách ly còn hiệu lực, tự dọn bản ghi đã hết hạn. */
+function getQuarantine(id: string): { until: number; reason: string } | null {
+  const entry = quarantine.get(id);
+  if (!entry) return null;
   if (Date.now() >= entry.until) {
-    quarantine.delete(key); // hết hạn -> tự quay lại pool
-    return false;
+    quarantine.delete(id); // hết hạn -> tự quay lại pool
+    return null;
   }
-  return true;
+  return entry;
+}
+
+function isQuarantined(id: string): boolean {
+  return getQuarantine(id) !== null;
 }
 
 /**
- * Filter out invalid placeholder tokens, OAuth access tokens, and malformed strings
+ * Lý do một chuỗi KHÔNG dùng làm API key được, hoặc null nếu nó hợp lệ.
+ *
+ * AI Studio phát hành hai định dạng key, cả hai đều thật:
+ *   "AIza..." — key Google API cổ điển.
+ *   "AQ...."  — định dạng mới, chính là thứ nút "Create API key" trả về hiện nay.
+ * Bản trước chặn thẳng tiền tố "AQ." vì tưởng là access token của gcloud, khiến
+ * mọi key tạo mới bị vứt ngay từ vòng đọc biến môi trường — cắm 5 key mà app chỉ
+ * thấy 2, lại không hề báo gì. Chỉ token OAuth thật (ya29./Bearer) mới bị loại.
  */
-function isValidKeyFormat(key: string | undefined): boolean {
-  if (!key) return false;
+function describeInvalidKey(key: string): string | null {
   const trimmed = key.trim();
-  if (
-    !trimmed ||
-    trimmed === "MY_GEMINI_API_KEY" ||
-    trimmed === "undefined" ||
-    trimmed === "null" ||
-    trimmed.startsWith("AQ.") || // Non-API token / gcloud access token
-    trimmed.startsWith("ya29.") || // Google OAuth Access Token
-    trimmed.startsWith("Bearer ")
-  ) {
-    return false;
-  }
-  // Standard Google AI API key starts with AIzaSy or AIza
-  if (trimmed.startsWith("AIza")) {
-    return trimmed.length >= 25;
-  }
-  return trimmed.length >= 20;
+  if (!trimmed) return "để trống";
+  if (trimmed === "MY_GEMINI_API_KEY" || trimmed === "undefined" || trimmed === "null")
+    return "vẫn là giá trị giữ chỗ, chưa thay bằng key thật";
+  if (trimmed.startsWith("ya29.") || trimmed.startsWith("Bearer "))
+    return "là OAuth access token (hết hạn sau khoảng 1 giờ), không phải API key";
+  if (trimmed.startsWith("AIza") && trimmed.length < 25)
+    return "key dạng AIza nhưng quá ngắn, nhiều khả năng bị cắt lúc dán";
+  if (trimmed.length < 20) return "quá ngắn để là API key, nhiều khả năng bị cắt lúc dán";
+  return null;
+}
+
+function isValidKeyFormat(key: string | undefined): boolean {
+  return !!key && describeInvalidKey(key) === null;
+}
+
+/** Key bị bỏ qua khi đọc biến môi trường, kèm lý do để hiện ra cho người dùng. */
+export interface IgnoredKey {
+  /** Tên biến môi trường chứa nó, ví dụ GEMINI_API_KEY_3 */
+  source: string;
+  masked: string;
+  reason: string;
+}
+
+interface EnvKeyScan {
+  keys: string[];
+  ignored: IgnoredKey[];
+  /** Biến có giá trị trùng với một key đã đọc trước đó -> không tính thêm suất. */
+  duplicateSources: string[];
 }
 
 /**
- * Đọc mọi key hợp lệ từ biến môi trường, chưa lọc cách ly.
- * Hỗ trợ GEMINI_API_KEY, GEMINI_API_KEYS="k1,k2", và GEMINI_API_KEY_1..10
+ * Quét biến môi trường lấy key, đồng thời ghi lại thứ bị loại và vì sao.
+ * Hỗ trợ GEMINI_API_KEY, GEMINI_API_KEYS="k1,k2", và GEMINI_API_KEY_1..10.
+ *
+ * Giữ nguyên thứ tự khai báo — số thứ tự key hiện trong modal khớp với biến môi
+ * trường. (Bản trước xếp key "AIza" lên đầu vì cho rằng chỉ nó mới là key thật;
+ * nay hai định dạng ngang nhau nên việc xếp lại chỉ làm rối khi đối chiếu.)
  */
-function getAllRawKeys(): string[] {
-  const rawKeys: string[] = [];
+function scanEnvKeys(): EnvKeyScan {
+  const keys: string[] = [];
+  const ignored: IgnoredKey[] = [];
+  const duplicateSources: string[] = [];
 
-  if (isValidKeyFormat(process.env.GEMINI_API_KEY)) {
-    rawKeys.push(process.env.GEMINI_API_KEY!.trim());
-  }
+  const consider = (source: string, raw: string | undefined) => {
+    const trimmed = raw?.trim();
+    if (!trimmed) return; // biến không đặt -> im lặng, không phải lỗi
+    const reason = describeInvalidKey(trimmed);
+    if (reason) {
+      ignored.push({ source, masked: maskApiKey(trimmed), reason });
+      return;
+    }
+    if (keys.includes(trimmed)) {
+      duplicateSources.push(source);
+      return;
+    }
+    keys.push(trimmed);
+  };
+
+  consider("GEMINI_API_KEY", process.env.GEMINI_API_KEY);
 
   if (process.env.GEMINI_API_KEYS) {
-    const splitKeys = process.env.GEMINI_API_KEYS.split(",")
-      .map((k) => k.trim())
-      .filter((k) => isValidKeyFormat(k));
-    for (const k of splitKeys) {
-      if (!rawKeys.includes(k)) rawKeys.push(k);
-    }
+    process.env.GEMINI_API_KEYS.split(",").forEach((k, i) =>
+      consider(`GEMINI_API_KEYS[${i + 1}]`, k)
+    );
   }
 
   for (let i = 1; i <= 10; i++) {
-    const numKey = process.env[`GEMINI_API_KEY_${i}`]?.trim();
-    if (isValidKeyFormat(numKey) && !rawKeys.includes(numKey!)) {
-      rawKeys.push(numKey!);
-    }
+    consider(`GEMINI_API_KEY_${i}`, process.env[`GEMINI_API_KEY_${i}`]);
   }
 
-  // Ưu tiên key dạng AIza (key AI Studio thật)
-  rawKeys.sort((a, b) => {
-    const aIsAIza = a.startsWith("AIza") ? 1 : 0;
-    const bIsAIza = b.startsWith("AIza") ? 1 : 0;
-    return bIsAIza - aIsAIza;
-  });
+  return { keys, ignored, duplicateSources };
+}
 
-  return rawKeys;
+function getAllRawKeys(): string[] {
+  return scanEnvKeys().keys;
 }
 
 /**
@@ -328,8 +380,18 @@ export async function executeWithRotationAndFallback<T>(
   currentKeyIndex = (currentKeyIndex + 1) % keys.length;
 
   const attempts: Attempt[] = [];
-  /** Key đã hỏng trong CHÍNH lần gọi này -> không thử lại ở các model sau. */
-  const spentKeys = new Set<number>();
+  /**
+   * Key hỏng ở mức xác thực trong CHÍNH lần gọi này -> bỏ với mọi model sau.
+   *
+   * Lỗi 429 KHÔNG thuộc nhóm này. Hạn mức tính riêng cho từng model, nên key cạn
+   * quota ở tier 1 vẫn còn nguyên quota ở tier 2. Bản trước gộp chung vào một tập
+   * "spentKeys": hai key cùng dính 429 ở model đầu là vòng lặp thoát ngay, bốn
+   * model dự phòng không bao giờ được gọi tới (modelDowngrades luôn bằng 0).
+   */
+  const deadKeys = new Set<number>();
+  /** Mốc thời gian sớm nhất một cặp (key, model) bị bỏ qua sẽ hết cách ly. */
+  let earliestRetryAt = Infinity;
+  let skippedByQuarantine = 0;
 
   /**
    * Trần số lần thử cho lỗi thoáng qua (500/503/không rõ).
@@ -348,7 +410,7 @@ export async function executeWithRotationAndFallback<T>(
     const isDowngraded = modelIdx > 0;
 
     if (transientCapReached) break;
-    if (spentKeys.size >= keys.length) break; // hết key dùng được, hạ model cũng vô ích
+    if (deadKeys.size >= keys.length) break; // mọi key đều hỏng, hạ model cũng vô ích
 
     if (isDowngraded) {
       stats.modelDowngrades++;
@@ -359,10 +421,20 @@ export async function executeWithRotationAndFallback<T>(
 
     for (let i = 0; i < keys.length; i++) {
       const activeKeyIndex = (initialKeyIndex + i) % keys.length;
-      if (spentKeys.has(activeKeyIndex)) continue;
+      if (deadKeys.has(activeKeyIndex)) continue;
 
       const activeKey = keys[activeKeyIndex];
       const masked = maskApiKey(activeKey);
+
+      // Cặp (key, model) này vừa cạn quota ở request trước -> gọi lại chỉ tốn thêm
+      // một lượt 429. Model khác của chính key này vẫn được thử bình thường.
+      const scope = quotaScope(activeKey, currentModel);
+      const held = getQuarantine(scope);
+      if (held) {
+        skippedByQuarantine++;
+        earliestRetryAt = Math.min(earliestRetryAt, held.until);
+        continue;
+      }
 
       try {
         const ai = new GoogleGenAI({ apiKey: activeKey });
@@ -405,8 +477,8 @@ export async function executeWithRotationAndFallback<T>(
 
         if (kind === "invalid-key" || kind === "unauthenticated" || kind === "key-forbidden") {
           stats.invalidKeyHits++;
-          quarantineKey(activeKey, kind, KIND_LABEL[kind]);
-          spentKeys.add(activeKeyIndex);
+          quarantineFor(activeKey, kind, KIND_LABEL[kind]);
+          deadKeys.add(activeKeyIndex);
           console.warn(
             `[Gemini] Key #${activeKeyIndex + 1} (${masked}) — ${KIND_LABEL[kind]}. ` +
               `Tạm nghỉ ${Math.round((QUARANTINE_MS[kind] || 0) / MINUTE)} phút rồi tự quay lại pool.`
@@ -416,9 +488,18 @@ export async function executeWithRotationAndFallback<T>(
 
         if (kind === "quota") {
           stats.rateLimitHits++;
-          quarantineKey(activeKey, kind, KIND_LABEL[kind]);
-          spentKeys.add(activeKeyIndex);
-          console.warn(`[Gemini] Key #${activeKeyIndex + 1} (${masked}) hết quota trên ${currentModel}.`);
+          // Chỉ cách ly cặp (key, model), và KHÔNG cho key vào deadKeys — nhờ vậy
+          // chính key này vẫn được thử ở các model tier thấp hơn ngay lượt sau.
+          const daily = isDailyQuota(message);
+          quarantineFor(
+            scope,
+            daily ? "quota-daily" : "quota",
+            daily ? "hết hạn mức theo ngày (429)" : KIND_LABEL[kind]
+          );
+          console.warn(
+            `[Gemini] Key #${activeKeyIndex + 1} (${masked}) hết quota trên ${currentModel}` +
+              `${daily ? " (hạn mức theo ngày)" : ""} — hạ model rồi thử lại chính key này.`
+          );
           continue;
         }
 
@@ -445,6 +526,18 @@ export async function executeWithRotationAndFallback<T>(
    * kể cả khi thật ra là key sai hoặc Google lỗi 500. Người dùng đi mua thêm key
    * trong khi vấn đề nằm chỗ khác.
    */
+  // Không gọi nổi lần nào vì mọi cặp (key, model) còn trong thời gian nghỉ quota.
+  // Không có attempt nào để phân loại, nên phải báo riêng kèm thời gian chờ.
+  if (attempts.length === 0 && skippedByQuarantine > 0) {
+    const secondsLeft = Math.max(1, Math.ceil((earliestRetryAt - Date.now()) / 1000));
+    const wait = secondsLeft >= 60 ? `${Math.ceil(secondsLeft / 60)} phút` : `${secondsLeft} giây`;
+    const msg =
+      `Toàn bộ ${keys.length} API Key đều đang trong thời gian nghỉ vì hết hạn mức. ` +
+      `Chờ khoảng ${wait} rồi thử lại.`;
+    stats.lastFailureReason = msg;
+    throw new GeminiExecutionError("quota", msg, 0, `${skippedByQuarantine} cặp key/model đang bị cách ly`);
+  }
+
   const tally = new Map<GeminiErrorKind, number>();
   for (const a of attempts) tally.set(a.kind, (tally.get(a.kind) || 0) + 1);
 
@@ -458,9 +551,17 @@ export async function executeWithRotationAndFallback<T>(
 
   let message: string;
   switch (dominantKind) {
-    case "quota":
-      message = `Tất cả ${keys.length} API Key đều đã đạt giới hạn quota. Chờ 1-2 phút rồi thử lại.`;
+    case "quota": {
+      // Nói rõ đã quét hết bao nhiêu model, và nhắc hạn mức tính theo project —
+      // câu cũ chỉ ghi "tất cả N API Key đều đạt giới hạn", khiến người dùng đi
+      // mua thêm key trong khi các key ấy có khi vẫn nằm chung một project.
+      const modelsTried = new Set(attempts.map((a) => a.model)).size;
+      message =
+        `Cả ${keys.length} API Key đều đã hết hạn mức trên ${modelsTried}/${modelTiers.length} model dự phòng. ` +
+        `Hạn mức miễn phí tính theo (project × model × ngày) chứ không theo key, nên nhiều key cùng một ` +
+        `Google Cloud project sẽ dùng chung một hạn mức. Chi tiết: ${detail}`;
       break;
+    }
     case "invalid-key":
     case "unauthenticated":
       message = `API Key không dùng được (${KIND_LABEL[dominantKind]}). Kiểm tra lại GEMINI_API_KEY trong biến môi trường. Chi tiết: ${detail}`;
@@ -491,23 +592,33 @@ export async function executeWithRotationAndFallback<T>(
  * Returns current rotation and model tier system status for UI / Health check
  */
 export function getRotationStatus() {
-  const rawKeys = getAllRawKeys();
+  const { keys: rawKeys, ignored, duplicateSources } = scanEnvKeys();
   const keys = getApiKeys();
 
-  const quarantinedKeys = rawKeys
-    .filter((k) => isQuarantined(k))
-    .map((k) => {
-      const entry = quarantine.get(k)!;
+  // Duyệt thẳng bảng cách ly: một bản ghi có thể gắn với cả key lẫn cặp key#model.
+  const quarantinedKeys = [...quarantine.keys()]
+    .map((id) => {
+      const entry = getQuarantine(id); // tự dọn bản ghi đã hết hạn
+      if (!entry) return null;
+      const sep = id.lastIndexOf("#");
+      const key = sep === -1 ? id : id.slice(0, sep);
       return {
-        masked: maskApiKey(k),
+        masked: maskApiKey(key),
+        model: sep === -1 ? null : id.slice(sep + 1),
         reason: entry.reason,
         secondsLeft: Math.max(0, Math.ceil((entry.until - Date.now()) / 1000)),
       };
-    });
+    })
+    .filter((k): k is NonNullable<typeof k> => k !== null);
 
   return {
     status: "ok",
-    totalKeysConfigured: keys.length,
+    totalKeysConfigured: rawKeys.length,
+    usableKeysNow: keys.length,
+    // Key khai trong biến môi trường nhưng bị loại, kèm lý do. Trước đây chúng bị
+    // vứt lặng lẽ: cắm 5 key, app chỉ thấy 2, không một dòng cảnh báo nào.
+    ignoredKeys: ignored,
+    duplicateKeySources: duplicateSources,
     maskedKeys: keys.map((k, idx) => ({ index: idx + 1, masked: maskApiKey(k) })),
     currentRoundRobinIndex: currentKeyIndex % (keys.length || 1),
     modelTiers: MODEL_FALLBACK_TIERS,
