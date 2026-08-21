@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+/* Ẩn triệt để huy hiệu Netlify Badge & Drawer */
+netlify-drawer,
+#netlify-drawer,
+[data-netlify-drawer],
+div[class*="netlify-drawer"],
+div[id*="netlify-drawer"],
+iframe[src*="netlify"] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}

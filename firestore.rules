@@ -1,0 +1,26 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Site visitor stats (read for all, safe increment)
+    match /stats/{statId} {
+      allow get: if statId == 'site_visitors';
+      allow create: if statId == 'site_visitors' 
+                    && request.resource.data.count is int 
+                    && request.resource.data.count >= 0;
+      allow update: if statId == 'site_visitors' 
+                    && request.resource.data.count is int 
+                    && request.resource.data.count >= resource.data.count 
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['count', 'lastVisitedAt']);
+    }
+
+    // Authenticated user data
+    match /users/{userId}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "Character & Roleplay Prompt Studio",
+  "description": "Công cụ xây dựng thẻ nhân vật chi tiết và tạo bộ prompt roleplay hoàn chỉnh theo mẫu chuẩn Hành Tinh Nhỏ của Cá Mèo",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
