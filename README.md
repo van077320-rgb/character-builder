@@ -128,6 +128,7 @@ shared/             aiContracts.ts        ← prompt & shape response DÙNG CHUN
                     characterFields.ts    ← 47 trường hợp lệ của thẻ nhân vật
 netlify/functions/  api.ts                ← backend production
 server.ts                                  ← backend khi chạy local
+docs/               checklist-quet-loi-xoay-key.md ← checklist tự rà lỗi lớp xoay key
 ```
 
 ### Hai quy ước cần giữ
