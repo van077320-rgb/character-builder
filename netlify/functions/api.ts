@@ -9,7 +9,9 @@
  */
 
 import {
+  EmptyResponseError,
   executeWithRotationAndFallback,
+  GeminiExecutionError,
   getRotationStatus,
   getApiKeys,
 } from "../../src/server/geminiRotationService";
@@ -39,6 +41,16 @@ const json = (statusCode: number, payload: unknown) => ({
   headers,
   body: JSON.stringify(payload),
 });
+
+/**
+ * Netlify giết function đồng bộ ở giây thứ 60 (mọi gói đều vậy, không chỉnh
+ * được). Khi bị giết, client nhận về trang HTML thay vì JSON nên không thể biết
+ * lý do. Dừng sớm hơn mốc đó vài giây để còn kịp trả về một lỗi JSON đọc được.
+ */
+const FUNCTION_BUDGET_MS = Number(process.env.FUNCTION_BUDGET_MS || 55000);
+
+/** Tuỳ chọn dùng chung cho mọi lượt gọi qua vòng xoay trong file này. */
+const ROTATION_OPTIONS = { budgetMs: FUNCTION_BUDGET_MS };
 
 /**
  * Chuẩn hoá path về dạng route nội bộ, chịu được cả hai kiểu Netlify gửi tới:
@@ -133,8 +145,18 @@ export const handler = async (event: any) => {
             responseMimeType: req.responseMimeType,
           },
         });
-        return response.text || "";
-      });
+
+        // 200 kèm body rỗng (thường do bộ lọc an toàn chặn) là THẤT BẠI, không
+        // phải thành công rỗng. Bản trước `return response.text || ""` khiến
+        // người dùng thấy ô trống mà không có lỗi nào để lần.
+        const text = (response.text || "").trim();
+        if (!text) {
+          throw new EmptyResponseError(
+            `Model ${model} trả về nội dung rỗng (thường do bộ lọc an toàn chặn prompt).`
+          );
+        }
+        return text;
+      }, ROTATION_OPTIONS);
 
       return json(200, {
         text: execution.data,
@@ -155,15 +177,17 @@ export const handler = async (event: any) => {
           contents: userPrompt,
           config: { systemInstruction, responseMimeType: "application/json" },
         });
-        return pickCharacterFields(safeExtractJson(response.text || "{}", {}));
-      });
-
-      // 200 mà không có trường nào là thất bại thật, không phải thành công rỗng
-      if (Object.keys(execution.data).length === 0) {
-        return json(502, {
-          error: "AI trả về dữ liệu không đúng định dạng thẻ nhân vật. Vui lòng thử lại.",
-        });
-      }
+        // Không có trường nào là THẤT BẠI, và phải báo từ TRONG vòng xoay.
+        // Kiểm ở ngoài thì vòng xoay đã kịp tính đây là một lần thành công rồi
+        // trả về, nên vừa hỏng thống kê vừa bỏ phí các tầng model dự phòng.
+        const picked = pickCharacterFields(safeExtractJson(response.text || "{}", {}));
+        if (Object.keys(picked).length === 0) {
+          throw new EmptyResponseError(
+            `Model ${model} không trả về dữ liệu đúng định dạng thẻ nhân vật.`
+          );
+        }
+        return picked;
+      }, ROTATION_OPTIONS);
 
       return json(200, {
         ...execution.data,
@@ -185,12 +209,15 @@ export const handler = async (event: any) => {
           contents: prompt,
           config: { responseMimeType: "application/json", temperature: 0.85 },
         });
-        return extractSuggestions(response.text || "");
-      });
-
-      if (execution.data.length === 0) {
-        return json(502, { error: "AI không trả về gợi ý phù hợp cho mục này. Vui lòng thử lại." });
-      }
+        // `extractSuggestions` GIỮ NGUYÊN nhánh cào từng dòng text khi JSON hỏng —
+        // đó là hành vi cố ý, không phải lỗi. Chỉ khi cào xong vẫn không còn dòng
+        // nào dùng được mới coi là thất bại và để vòng xoay hạ model thử lại.
+        const suggestions = extractSuggestions(response.text || "");
+        if (suggestions.length === 0) {
+          throw new EmptyResponseError(`Model ${model} không trả về gợi ý nào dùng được.`);
+        }
+        return suggestions;
+      }, ROTATION_OPTIONS);
 
       return json(200, {
         suggestions: execution.data,
@@ -215,14 +242,17 @@ export const handler = async (event: any) => {
             responseMimeType: "application/json",
           },
         });
-        return pickTemplateSectionFields(sectionType, safeExtractJson(response.text || "{}", {}));
-      });
-
-      if (!execution.data) {
-        return json(502, {
-          error: `AI không trả về nội dung hợp lệ cho mục "${sectionType}". Vui lòng thử lại.`,
-        });
-      }
+        const picked = pickTemplateSectionFields(
+          sectionType,
+          safeExtractJson(response.text || "{}", {})
+        );
+        if (!picked) {
+          throw new EmptyResponseError(
+            `Model ${model} không trả về nội dung hợp lệ cho mục "${sectionType}".`
+          );
+        }
+        return picked;
+      }, ROTATION_OPTIONS);
 
       return json(200, {
         ...execution.data,
@@ -236,7 +266,19 @@ export const handler = async (event: any) => {
 
     return json(404, { error: `Endpoint '${path}' chưa được cài đặt.` });
   } catch (err: any) {
-    console.error(`[Netlify API Error] ${path}:`, err);
+    console.error(`[Netlify API Error] ${path}:`, err?.message || err);
+
+    // Trả đúng mã theo loại lỗi thay vì 500 cho mọi thứ: hết quota là 429, hết
+    // giờ là 504, AI trả rỗng là 502. Client phân biệt được "chờ rồi thử lại"
+    // với "cấu hình sai" mà không phải dò chuỗi trong thông báo.
+    if (err instanceof GeminiExecutionError) {
+      return json(err.httpStatus, {
+        error: err.message,
+        failureKind: err.kind,
+        limitReached: err.kind === "quota",
+      });
+    }
+
     return json(500, { error: err?.message || "Lỗi xử lý serverless trên Netlify" });
   }
 };

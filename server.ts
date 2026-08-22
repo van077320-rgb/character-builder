@@ -3,6 +3,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
 import {
+  EmptyResponseError,
   executeWithRotationAndFallback,
   getRotationStatus,
   getApiKeys,
@@ -30,6 +31,20 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json({ limit: "10mb" }));
+
+/**
+ * Trả lỗi theo ĐÚNG mã HTTP của từng loại (429 hết quota, 504 hết giờ, 502 khi AI
+ * trả rỗng...) thay vì 500 cho mọi thứ. Client phân biệt được "chờ rồi thử lại"
+ * với "cấu hình sai" mà không phải dò chuỗi trong thông báo.
+ */
+function sendGeminiError(res: Response, error: any, fallbackMessage: string) {
+  const isGemini = error instanceof GeminiExecutionError;
+  return res.status(isGemini ? error.httpStatus : 500).json({
+    error: error?.message || fallbackMessage,
+    limitReached: isGemini && error.kind === "quota",
+    failureKind: isGemini ? error.kind : undefined,
+  });
+}
 
 // Health and System Status check (includes API Key pool count)
 app.get("/api/health", (req: Request, res: Response) => {
@@ -72,7 +87,15 @@ app.post("/api/chat", async (req: Request, res: Response) => {
           responseMimeType: chatReq.responseMimeType,
         },
       });
-      return response.text || "";
+      // Giống hệt netlify/functions/api.ts: 200 kèm body rỗng là THẤT BẠI, không
+      // phải thành công rỗng. Để dev và production hỏng giống nhau.
+      const text = (response.text || "").trim();
+      if (!text) {
+        throw new EmptyResponseError(
+          `Model ${model} trả về nội dung rỗng (thường do bộ lọc an toàn chặn prompt).`
+        );
+      }
+      return text;
     });
 
     return res.json({
@@ -85,12 +108,8 @@ app.post("/api/chat", async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error("Chat API Error:", error);
-    return res.status(500).json({
-      error: error.message || "Lỗi khi xử lý yêu cầu AI chat.",
-      // Dựa vào loại lỗi đã phân loại, không dò chuỗi "Limit:" trong thông báo nữa
-      limitReached: error instanceof GeminiExecutionError && error.kind === "quota",
-      failureKind: error instanceof GeminiExecutionError ? error.kind : undefined,
-    });
+    // Dựa vào loại lỗi đã phân loại, không dò chuỗi "Limit:" trong thông báo nữa
+    return sendGeminiError(res, error, "Lỗi khi xử lý yêu cầu AI chat.");
   }
 });
 
@@ -105,15 +124,17 @@ app.post("/api/gemini/generate-character", async (req: Request, res: Response) =
         contents: userPrompt,
         config: { systemInstruction, responseMimeType: "application/json" },
       });
-      return pickCharacterFields(safeExtractJson(response.text || "{}", {}));
+      // Không có trường nào là THẤT BẠI, và phải báo từ TRONG vòng xoay — kiểm ở
+      // ngoài thì vòng xoay đã kịp tính là thành công rồi trả về, vừa hỏng thống
+      // kê vừa bỏ phí các tầng model dự phòng.
+      const picked = pickCharacterFields(safeExtractJson(response.text || "{}", {}));
+      if (Object.keys(picked).length === 0) {
+        throw new EmptyResponseError(
+          `Model ${model} không trả về dữ liệu đúng định dạng thẻ nhân vật.`
+        );
+      }
+      return picked;
     });
-
-    // 200 mà không có trường nào là thất bại thật, không phải thành công rỗng
-    if (Object.keys(execution.data).length === 0) {
-      return res.status(502).json({
-        error: "AI trả về dữ liệu không đúng định dạng thẻ nhân vật. Vui lòng thử lại.",
-      });
-    }
 
     return res.json({
       ...execution.data,
@@ -126,7 +147,7 @@ app.post("/api/gemini/generate-character", async (req: Request, res: Response) =
     });
   } catch (error: any) {
     console.error("Gemini Error:", error);
-    return res.status(500).json({ error: error.message || "Lỗi khi gọi AI Gemini" });
+    return sendGeminiError(res, error, "Lỗi khi gọi AI Gemini");
   }
 });
 
@@ -141,14 +162,15 @@ app.post("/api/gemini/suggest-field", async (req: Request, res: Response) => {
         contents: prompt,
         config: { responseMimeType: "application/json", temperature: 0.85 },
       });
-      return extractSuggestions(response.text || "");
+      // `extractSuggestions` GIỮ NGUYÊN nhánh cào từng dòng text khi JSON hỏng —
+      // đó là hành vi cố ý. Chỉ khi cào xong vẫn không còn dòng nào dùng được mới
+      // coi là thất bại và để vòng xoay hạ model thử lại.
+      const suggestions = extractSuggestions(response.text || "");
+      if (suggestions.length === 0) {
+        throw new EmptyResponseError(`Model ${model} không trả về gợi ý nào dùng được.`);
+      }
+      return suggestions;
     });
-
-    if (execution.data.length === 0) {
-      return res
-        .status(502)
-        .json({ error: "AI không trả về gợi ý phù hợp cho mục này. Vui lòng thử lại." });
-    }
 
     return res.json({
       suggestions: execution.data,
@@ -160,7 +182,7 @@ app.post("/api/gemini/suggest-field", async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error("Suggest field error:", error);
-    return res.status(500).json({ error: error.message || "Lỗi khi gợi ý trường" });
+    return sendGeminiError(res, error, "Lỗi khi gợi ý trường");
   }
 });
 
@@ -180,14 +202,17 @@ app.post("/api/gemini/generate-template-section", async (req: Request, res: Resp
           responseMimeType: "application/json",
         },
       });
-      return pickTemplateSectionFields(sectionType, safeExtractJson(response.text || "{}", {}));
+      const picked = pickTemplateSectionFields(
+        sectionType,
+        safeExtractJson(response.text || "{}", {})
+      );
+      if (!picked) {
+        throw new EmptyResponseError(
+          `Model ${model} không trả về nội dung hợp lệ cho mục "${sectionType}".`
+        );
+      }
+      return picked;
     });
-
-    if (!execution.data) {
-      return res.status(502).json({
-        error: `AI không trả về nội dung hợp lệ cho mục "${sectionType}". Vui lòng thử lại.`,
-      });
-    }
 
     return res.json({
       ...execution.data,
@@ -199,7 +224,7 @@ app.post("/api/gemini/generate-template-section", async (req: Request, res: Resp
     });
   } catch (error: any) {
     console.error("Template section error:", error);
-    return res.status(500).json({ error: error.message || "Lỗi khi tạo phần template" });
+    return sendGeminiError(res, error, "Lỗi khi tạo phần template");
   }
 });
 

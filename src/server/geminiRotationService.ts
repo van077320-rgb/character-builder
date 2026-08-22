@@ -44,6 +44,12 @@ export interface RotationStats {
   invalidKeyHits: number;
   serverErrorHits: number;
   modelDowngrades: number;
+  /**
+   * Số lần một request phải dùng tới key NHÓM DỰ PHÒNG. Đây là con số để theo
+   * dõi xem hạn mức của người đóng góp thực sự bị tiêu bao nhiêu — 0 nghĩa là
+   * key của chủ web vẫn gánh được hết.
+   */
+  reserveKeyUses: number;
   lastUsedModel: string;
   lastUsedKeyIndex: number;
   lastFailureReason: string | null;
@@ -59,6 +65,7 @@ const stats: RotationStats = {
   invalidKeyHits: 0,
   serverErrorHits: 0,
   modelDowngrades: 0,
+  reserveKeyUses: 0,
   lastUsedModel: MODEL_FALLBACK_TIERS[0].id,
   lastUsedKeyIndex: 0,
   lastFailureReason: null,
@@ -134,6 +141,25 @@ function isQuarantined(id: string): boolean {
 }
 
 /**
+ * Bóc dấu nháy và ngoặc vuông thừa quanh giá trị.
+ *
+ * `.env.example` viết giá trị trong dấu nháy kép, và người dùng thường copy cả
+ * dấu nháy vào ô Environment Variables của Netlify. `.trim()` cứu được khoảng
+ * trắng nhưng không cứu được dấu nháy.
+ *
+ * Đặc biệt nguy hiểm với GEMINI_API_KEYS: bọc cả danh sách trong một cặp nháy
+ * rồi tách theo dấu phẩy sẽ làm HỎNG HAI key (đầu và cuối), và không bộ lọc nào
+ * bắt được — chuỗi `"AIzaSy...` không còn bắt đầu bằng "AIza" nên lọt qua hết,
+ * rồi ăn 401 lúc gọi thật.
+ */
+function cleanKey(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^["'`\[\]]+|["'`\[\]]+$/g, "")
+    .trim();
+}
+
+/**
  * Lý do một chuỗi KHÔNG dùng làm API key được, hoặc null nếu nó hợp lệ.
  *
  * AI Studio phát hành hai định dạng key, cả hai đều thật:
@@ -169,15 +195,25 @@ export interface IgnoredKey {
 }
 
 interface EnvKeyScan {
+  /** Toàn bộ key hợp lệ, XẾP NHÓM CHÍNH TRƯỚC rồi mới tới nhóm dự phòng. */
   keys: string[];
+  /**
+   * Key thuộc nhóm dự phòng (do người khác đóng góp). Chỉ được dùng khi nhóm
+   * chính đã cạn sạch — xem `getKeyGroups()`.
+   */
+  reserveKeys: Set<string>;
   ignored: IgnoredKey[];
   /** Biến có giá trị trùng với một key đã đọc trước đó -> không tính thêm suất. */
   duplicateSources: string[];
 }
 
+/** Số thứ tự tối đa cho biến dạng GEMINI_API_KEY_<n>. Phải khớp `.env.example`. */
+const MAX_NUMBERED_KEYS = 50;
+
 /**
  * Quét biến môi trường lấy key, đồng thời ghi lại thứ bị loại và vì sao.
- * Hỗ trợ GEMINI_API_KEY, GEMINI_API_KEYS="k1,k2", và GEMINI_API_KEY_1..10.
+ * Hỗ trợ GEMINI_API_KEY, GEMINI_API_KEYS="k1,k2" (không giới hạn số lượng),
+ * và GEMINI_API_KEY_1..50.
  *
  * Giữ nguyên thứ tự khai báo — số thứ tự key hiện trong modal khớp với biến môi
  * trường. (Bản trước xếp key "AIza" lên đầu vì cho rằng chỉ nó mới là key thật;
@@ -185,11 +221,16 @@ interface EnvKeyScan {
  */
 function scanEnvKeys(): EnvKeyScan {
   const keys: string[] = [];
+  const reserveKeys = new Set<string>();
   const ignored: IgnoredKey[] = [];
   const duplicateSources: string[] = [];
 
+  /** Nhóm đang quét. Đọc nhóm chính trước nên key trùng luôn thuộc về nhóm chính. */
+  let group: "primary" | "reserve" = "primary";
+
   const consider = (source: string, raw: string | undefined) => {
-    const trimmed = raw?.trim();
+    if (typeof raw !== "string") return;
+    const trimmed = cleanKey(raw);
     if (!trimmed) return; // biến không đặt -> im lặng, không phải lỗi
     const reason = describeInvalidKey(trimmed);
     if (reason) {
@@ -201,21 +242,78 @@ function scanEnvKeys(): EnvKeyScan {
       return;
     }
     keys.push(trimmed);
+    if (group === "reserve") reserveKeys.add(trimmed);
   };
 
+  /**
+   * Một biến chứa nhiều key. Nhận dấu phẩy, chấm phẩy, gạch đứng hoặc xuống dòng
+   * làm dấu phân tách — key gom từ nhiều người gửi về hiếm khi đúng một định dạng.
+   */
+  const considerList = (source: string, raw: string | undefined) => {
+    if (typeof raw !== "string" || !raw.trim()) return;
+    const parts = raw.split(/[,;|\n\r]+/).filter((p) => p.trim());
+    if (parts.length <= 1) {
+      consider(source, raw);
+      return;
+    }
+    parts.forEach((p, i) => consider(`${source}[${i + 1}]`, p));
+  };
+
+  /* ── Nhóm chính: key của chủ web, dùng trước ───────────────── */
   consider("GEMINI_API_KEY", process.env.GEMINI_API_KEY);
+  considerList("GEMINI_API_KEYS", process.env.GEMINI_API_KEYS);
 
-  if (process.env.GEMINI_API_KEYS) {
-    process.env.GEMINI_API_KEYS.split(",").forEach((k, i) =>
-      consider(`GEMINI_API_KEYS[${i + 1}]`, k)
-    );
-  }
-
-  for (let i = 1; i <= 10; i++) {
+  for (let i = 1; i <= MAX_NUMBERED_KEYS; i++) {
     consider(`GEMINI_API_KEY_${i}`, process.env[`GEMINI_API_KEY_${i}`]);
   }
 
-  return { keys, ignored, duplicateSources };
+  /* ── Nhóm dự phòng: key người khác đóng góp, chỉ đụng khi hết đường ──
+   * Quét SAU nhóm chính là có chủ đích: một key lỡ khai ở cả hai nơi sẽ được
+   * tính vào nhóm chính, và biến bên dự phòng bị ghi là trùng. Thà dùng nhầm
+   * key của mình còn hơn đốt nhầm key của người ta.
+   */
+  group = "reserve";
+  considerList("GEMINI_API_KEYS_RESERVE", process.env.GEMINI_API_KEYS_RESERVE);
+
+  for (let i = 1; i <= MAX_NUMBERED_KEYS; i++) {
+    consider(`GEMINI_API_KEY_RESERVE_${i}`, process.env[`GEMINI_API_KEY_RESERVE_${i}`]);
+  }
+
+  return { keys, reserveKeys, ignored, duplicateSources };
+}
+
+/** Một key kèm vị trí của nó trong danh sách dùng được (để báo cáo cho khớp UI). */
+interface KeyEntry {
+  key: string;
+  /** Vị trí trong `getApiKeys()`, khớp với `maskedKeys[].index - 1` ở status. */
+  index: number;
+  reserve: boolean;
+}
+
+/**
+ * Chia key dùng được thành các nhóm theo THỨ TỰ ƯU TIÊN: chính trước, dự phòng sau.
+ *
+ * Vòng xoay vét cạn nhóm chính qua TẤT CẢ các tầng model rồi mới chạm nhóm dự
+ * phòng. Nghĩa là người dùng có thể nhận model yếu hơn (flash-lite bằng key của
+ * chủ web) thay vì model mạnh bằng key đóng góp — đó là đánh đổi có chủ đích, để
+ * hạn mức của người đóng góp bị tiêu càng ít càng tốt.
+ */
+function getKeyGroups(): { label: string; entries: KeyEntry[] }[] {
+  const usable = getApiKeys();
+  const { reserveKeys } = scanEnvKeys();
+
+  const primary: KeyEntry[] = [];
+  const reserve: KeyEntry[] = [];
+
+  usable.forEach((key, index) => {
+    const isReserve = reserveKeys.has(key);
+    (isReserve ? reserve : primary).push({ key, index, reserve: isReserve });
+  });
+
+  const groups: { label: string; entries: KeyEntry[] }[] = [];
+  if (primary.length > 0) groups.push({ label: "chính", entries: primary });
+  if (reserve.length > 0) groups.push({ label: "dự phòng", entries: reserve });
+  return groups;
 }
 
 function getAllRawKeys(): string[] {
@@ -256,6 +354,8 @@ export type GeminiErrorKind =
   | "server-error" // 500 INTERNAL — KHÔNG phải hết quota
   | "model-missing" // 404 / model không tồn tại -> nhảy sang model khác
   | "bad-request" // 400 do nội dung request -> thử lại vô ích
+  | "empty-response" // API trả 200 nhưng không có nội dung dùng được
+  | "timeout" // hết ngân sách thời gian của serverless function
   | "unknown";
 
 /** Nhãn tiếng Việt để ghép vào thông báo cuối cùng. */
@@ -268,11 +368,46 @@ const KIND_LABEL: Record<GeminiErrorKind, string> = {
   "server-error": "Google trả lỗi máy chủ (500)",
   "model-missing": "model không tồn tại",
   "bad-request": "yêu cầu gửi lên không hợp lệ (400)",
+  "empty-response": "AI trả về nội dung rỗng",
+  timeout: "hết thời gian cho phép",
   unknown: "lỗi không xác định",
 };
 
+/**
+ * Mã HTTP nên trả cho client theo từng loại lỗi.
+ *
+ * Trước đây mọi thất bại đều ra 500, kể cả hết quota hay hết giờ — client không
+ * có cách nào phân biệt "chờ chút rồi thử lại" với "cấu hình sai".
+ */
+const HTTP_STATUS_BY_KIND: Record<GeminiErrorKind, number> = {
+  "invalid-key": 401,
+  unauthenticated: 401,
+  "key-forbidden": 403,
+  quota: 429,
+  overloaded: 503,
+  "server-error": 502,
+  "model-missing": 502,
+  "bad-request": 400,
+  "empty-response": 502,
+  timeout: 504,
+  unknown: 500,
+};
+
+/**
+ * API trả 200 nhưng nội dung không dùng được (bị bộ lọc an toàn chặn, JSON hỏng,
+ * thiếu trường bắt buộc). Đây là THẤT BẠI, không phải thành công rỗng — trả về
+ * chuỗi trắng chỉ khiến người dùng thấy ô trống mà không có gì để lần.
+ */
+export class EmptyResponseError extends Error {
+  constructor(message = "AI trả về nội dung rỗng hoặc không đúng định dạng.") {
+    super(message);
+    this.name = "EmptyResponseError";
+  }
+}
+
 export function classifyGeminiError(error: any): GeminiErrorKind {
   if (!error) return "unknown";
+  if (error instanceof EmptyResponseError) return "empty-response";
 
   const msg = String(error.message || error.toString() || "").toLowerCase();
   const rawStatus = error.status ?? error.statusCode ?? error.code;
@@ -330,6 +465,8 @@ export interface ExecutionResult<T> {
   keyMasked: string;
   downgraded: boolean;
   retriesCount: number;
+  /** Lượt gọi này có phải dùng tới key nhóm dự phòng hay không. */
+  usedReserveKey: boolean;
 }
 
 /** Lỗi có mang theo nguyên nhân thật, không bị đổi tên thành "hết quota". */
@@ -338,6 +475,8 @@ export class GeminiExecutionError extends Error {
   attempts: number;
   /** Nguyên văn lỗi cuối cùng của Google, để debug. */
   detail: string;
+  /** Mã HTTP nên trả về cho client theo đúng loại lỗi. */
+  httpStatus: number;
 
   constructor(kind: GeminiErrorKind, message: string, attempts: number, detail: string) {
     super(message);
@@ -345,6 +484,7 @@ export class GeminiExecutionError extends Error {
     this.kind = kind;
     this.attempts = attempts;
     this.detail = detail;
+    this.httpStatus = HTTP_STATUS_BY_KIND[kind];
   }
 }
 
@@ -353,6 +493,20 @@ interface Attempt {
   model: string;
   keyIndex: number;
   message: string;
+}
+
+export interface RotationOptions {
+  customModelTiers?: string[];
+  /**
+   * Trần thời gian cho cả vòng xoay (ms). Netlify giết function đồng bộ ở giây
+   * thứ 60 và client nhận về trang HTML thay vì JSON nên không biết lý do —
+   * dừng sớm hơn mốc đó vài giây để còn kịp trả một lỗi JSON đọc được.
+   *
+   * Chỉ đặt ở môi trường có trần cứng (Netlify Functions). Express chạy `npm
+   * start`/`npm run dev` không bị giết nên để trống, tránh cắt ngang một
+   * request chậm nhưng vẫn đang chạy tốt.
+   */
+  budgetMs?: number;
 }
 
 /**
@@ -367,7 +521,7 @@ interface Attempt {
  */
 export async function executeWithRotationAndFallback<T>(
   operation: (ai: GoogleGenAI, model: string, keyInfo: { index: number; masked: string }) => Promise<T>,
-  options?: { customModelTiers?: string[] }
+  options?: RotationOptions
 ): Promise<ExecutionResult<T>> {
   const keys = getApiKeys();
   if (keys.length === 0) {
@@ -381,7 +535,28 @@ export async function executeWithRotationAndFallback<T>(
 
   stats.totalRequests++;
   const modelTiers = options?.customModelTiers || FALLBACK_MODEL_IDS;
-  const initialKeyIndex = currentKeyIndex % keys.length;
+
+  const startedAt = Date.now();
+  const budgetMs = options?.budgetMs;
+  const outOfBudget = () => typeof budgetMs === "number" && Date.now() - startedAt > budgetMs;
+
+  /**
+   * Nhóm key theo ƯU TIÊN rồi trải phẳng thành từng lượt (nhóm × model).
+   *
+   * Vét cạn nhóm chính qua TẤT CẢ các tầng model rồi mới chạm nhóm dự phòng —
+   * xem `getKeyGroups()`. Trải phẳng thay vì lồng thêm một vòng lặp nữa để giữ
+   * nguyên độ sâu, nhờ đó toàn bộ luồng break/continue bên dưới không đổi nghĩa.
+   */
+  const groups = getKeyGroups();
+  const passes: { entries: KeyEntry[]; model: string; modelIdx: number; group: string }[] = [];
+  for (const group of groups) {
+    modelTiers.forEach((model, modelIdx) =>
+      passes.push({ entries: group.entries, model, modelIdx, group: group.label })
+    );
+  }
+
+  /** Điểm bắt đầu round-robin, dùng chung cho mọi nhóm trong lần gọi này. */
+  const roundRobinStart = currentKeyIndex;
   currentKeyIndex = (currentKeyIndex + 1) % keys.length;
 
   const attempts: Attempt[] = [];
@@ -397,6 +572,7 @@ export async function executeWithRotationAndFallback<T>(
   /** Mốc thời gian sớm nhất một cặp (key, model) bị bỏ qua sẽ hết cách ly. */
   let earliestRetryAt = Infinity;
   let skippedByQuarantine = 0;
+  let budgetExhausted = false;
 
   /**
    * Trần số lần thử cho lỗi thoáng qua (500/503/không rõ).
@@ -410,25 +586,39 @@ export async function executeWithRotationAndFallback<T>(
   let transientAttempts = 0;
   let transientCapReached = false;
 
-  for (let modelIdx = 0; modelIdx < modelTiers.length; modelIdx++) {
-    const currentModel = modelTiers[modelIdx];
+  for (let p = 0; p < passes.length; p++) {
+    const { entries, model: currentModel, modelIdx, group } = passes[p];
     const isDowngraded = modelIdx > 0;
+    const initialKeyIndex = roundRobinStart % entries.length;
 
     if (transientCapReached) break;
-    if (deadKeys.size >= keys.length) break; // mọi key đều hỏng, hạ model cũng vô ích
+    if (outOfBudget()) {
+      budgetExhausted = true;
+      break;
+    }
+    // Mọi key của nhóm này đều hỏng -> các tầng model còn lại của chính nhóm đó
+    // cũng vô ích, bỏ qua để rơi sang nhóm kế tiếp.
+    if (entries.every((e) => deadKeys.has(e.index))) continue;
 
     if (isDowngraded) {
       stats.modelDowngrades++;
       console.warn(
-        `[Gemini Fallback] Hạ model xuống: ${currentModel} (Cấp ${modelIdx + 1}/${modelTiers.length})`
+        `[Gemini Fallback] Hạ model xuống: ${currentModel} ` +
+          `(Cấp ${modelIdx + 1}/${modelTiers.length}, nhóm key ${group})`
       );
     }
 
-    for (let i = 0; i < keys.length; i++) {
-      const activeKeyIndex = (initialKeyIndex + i) % keys.length;
+    for (let i = 0; i < entries.length; i++) {
+      if (outOfBudget()) {
+        budgetExhausted = true;
+        break;
+      }
+
+      const entry = entries[(initialKeyIndex + i) % entries.length];
+      const activeKeyIndex = entry.index;
       if (deadKeys.has(activeKeyIndex)) continue;
 
-      const activeKey = keys[activeKeyIndex];
+      const activeKey = entry.key;
       const masked = maskApiKey(activeKey);
 
       // Cặp (key, model) này vừa cạn quota ở request trước -> gọi lại chỉ tốn thêm
@@ -449,6 +639,8 @@ export async function executeWithRotationAndFallback<T>(
         stats.lastUsedModel = currentModel;
         stats.lastUsedKeyIndex = activeKeyIndex;
         stats.lastFailureReason = null;
+        // Đếm riêng số lần phải đụng tới key do người khác đóng góp.
+        if (entry.reserve) stats.reserveKeyUses++;
 
         return {
           data: result,
@@ -457,6 +649,7 @@ export async function executeWithRotationAndFallback<T>(
           keyMasked: masked,
           downgraded: isDowngraded,
           retriesCount: attempts.length,
+          usedReserveKey: entry.reserve,
         };
       } catch (error: any) {
         const kind = classifyGeminiError(error);
@@ -509,6 +702,18 @@ export async function executeWithRotationAndFallback<T>(
           continue;
         }
 
+        // empty-response: model chạy được nhưng nội dung không dùng được. Không
+        // phải lỗi của key, nên đổi MODEL chứ đừng đốt cả pool key ở cùng một
+        // model — prompt bị bộ lọc của tier này chặn thì key khác cũng chặn y hệt.
+        if (kind === "empty-response") {
+          transientAttempts++;
+          console.warn(`[Gemini] ${currentModel} trả nội dung rỗng: ${message}`);
+          if (transientAttempts >= MAX_TRANSIENT_ATTEMPTS) {
+            transientCapReached = true;
+          }
+          break; // sang model kế tiếp
+        }
+
         // server-error / overloaded / unknown: không phải lỗi của key, không cách ly.
         // Nhưng phải có trần, nếu không một cú 500 kéo theo (key × model) lần gọi.
         if (kind === "server-error") stats.serverErrorHits++;
@@ -532,6 +737,19 @@ export async function executeWithRotationAndFallback<T>(
    * kể cả khi thật ra là key sai hoặc Google lỗi 500. Người dùng đi mua thêm key
    * trong khi vấn đề nằm chỗ khác.
    */
+  // Hết ngân sách thời gian trước khi Netlify kịp giết function. Báo riêng, vì
+  // nếu để rơi xuống nhánh tally bên dưới thì lỗi sẽ mang tên nguyên nhân chiếm
+  // đa số ("hết quota") trong khi thật ra là vòng xoay chạy quá lâu.
+  if (budgetExhausted) {
+    const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+    const msg =
+      `Hết thời gian cho phép của serverless function (đã dùng ${elapsed}s sau ${attempts.length} lượt thử, ` +
+      `giới hạn cứng của Netlify là 60 giây). Thường do các key đầu bị nghẽn quota nên vòng xoay ngốn hết ` +
+      `thời gian. Bấm thử lại hoặc rút ngắn yêu cầu.`;
+    stats.lastFailureReason = msg;
+    throw new GeminiExecutionError("timeout", msg, attempts.length, `budget ${budgetMs}ms exceeded`);
+  }
+
   // Không gọi nổi lần nào vì mọi cặp (key, model) còn trong thời gian nghỉ quota.
   // Không có attempt nào để phân loại, nên phải báo riêng kèm thời gian chờ.
   if (attempts.length === 0 && skippedByQuarantine > 0) {
@@ -584,6 +802,14 @@ export async function executeWithRotationAndFallback<T>(
     case "model-missing":
       message = `Không model nào trong danh sách dự phòng dùng được (${modelTiers.join(", ")}). Kiểm tra lại tên model. Chi tiết: ${detail}`;
       break;
+    case "empty-response":
+      // Đã thử hết các tier mà tier nào cũng trả rỗng -> gần như chắc chắn là bộ
+      // lọc an toàn chặn nội dung prompt, không phải trục trặc kỹ thuật.
+      message =
+        `Cả ${new Set(attempts.map((a) => a.model)).size} model đều trả về nội dung rỗng. ` +
+        `Thường là bộ lọc an toàn của Google chặn nội dung prompt — thử diễn đạt lại phần nhạy cảm. ` +
+        `Chi tiết: ${detail}`;
+      break;
     default:
       message = `Gọi Gemini thất bại sau ${attempts.length} lần thử. Chi tiết: ${detail}`;
   }
@@ -598,7 +824,7 @@ export async function executeWithRotationAndFallback<T>(
  * Returns current rotation and model tier system status for UI / Health check
  */
 export function getRotationStatus() {
-  const { keys: rawKeys, ignored, duplicateSources } = scanEnvKeys();
+  const { keys: rawKeys, reserveKeys, ignored, duplicateSources } = scanEnvKeys();
   const keys = getApiKeys();
 
   // Duyệt thẳng bảng cách ly: một bản ghi có thể gắn với cả key lẫn cặp key#model.
@@ -630,10 +856,14 @@ export function getRotationStatus() {
     duplicateKeySources: duplicateSources,
     // Kèm độ dài: key bị cắt lúc copy/dán vẫn qua được mọi bộ lọc định dạng rồi
     // ăn 401, và không có cách nào khác để nhìn ra. Độ dài không phải bí mật.
+    // Số key mỗi nhóm. Nhóm dự phòng chỉ được đụng tới khi nhóm chính cạn sạch.
+    primaryKeysConfigured: rawKeys.filter((k) => !reserveKeys.has(k)).length,
+    reserveKeysConfigured: reserveKeys.size,
     maskedKeys: keys.map((k, idx) => ({
       index: idx + 1,
       masked: maskApiKey(k),
       length: k.length,
+      role: reserveKeys.has(k) ? "dự phòng" : "chính",
     })),
     currentRoundRobinIndex: currentKeyIndex % (keys.length || 1),
     modelTiers: MODEL_FALLBACK_TIERS,
