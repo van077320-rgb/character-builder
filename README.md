@@ -87,6 +87,26 @@ Khoá Gemini **chỉ tồn tại ở tầng server** — không có biến nào 
 
 ---
 
+## Lưu ý khi dùng
+
+Hai điều hay làm người dùng mắc kẹt nhất. Cả hai đã được ghi trong mục
+**Hướng dẫn cơ bản** ngay trang chủ của app — sửa ở đây thì nhớ sửa cả
+[HeroGateway.tsx](src/components/HeroGateway.tsx) cho khớp.
+
+**Google Drive phải cấp lại quyền mỗi lần vào trang.** Access token của Drive
+không được lưu qua lần tải trang (cố ý, để không phải cất token vào
+localStorage) và bản thân nó chỉ sống một tiếng. Nghĩa là mở lại tab là phải
+đăng nhập / cấp quyền lại thì mới lưu lên Drive được. App có bắt trường hợp này
+và hiện nút cấp lại quyền, nhưng người dùng nên kiểm tra biểu tượng Drive
+**trước** khi ngồi gõ cả bản nháp.
+
+**Bị giới hạn AI thì bấm biểu tượng con chip.** Modal trạng thái cho biết còn
+bao nhiêu key dùng được, key nào đang tạm nghỉ vì lý do gì, và **còn bao lâu
+nữa** thì quay lại pool. Không có nó thì người dùng chỉ biết bấm thử lại liên
+tục mà không biết phải đợi đến bao giờ — mỗi lần thử lại còn đốt thêm quota.
+
+---
+
 ## Cấu hình Firebase & Google Cloud
 
 Thông tin project nằm trong [firebase-applet-config.json](firebase-applet-config.json).

@@ -13,10 +13,15 @@ import {
   Download, 
   Eye, 
   Check, 
-  FolderKanban, 
-  ShieldCheck, 
-  Cpu, 
-  Globe
+  FolderKanban,
+  ShieldCheck,
+  Cpu,
+  Globe,
+  HelpCircle,
+  ChevronDown,
+  ChevronUp,
+  Cloud,
+  Clock
 } from "lucide-react";
 import { SavedHistoryItem, CharacterData } from "../types";
 import { StarIcon, FourPointStar, CloudIcon, CloudBannerDecoration } from "./CloudStarDecorations";
@@ -49,6 +54,10 @@ export const HeroGateway: React.FC<HeroGatewayProps> = ({
   isDark,
 }) => {
   const [searchTerm, setSearchTerm] = useState("");
+  // Mở sẵn: hai lưu ý bên trong (cấp lại quyền Drive, xem thời gian chờ API) là
+  // thứ người dùng cần biết TRƯỚC khi gặp lỗi, mà khối thu gọn thì thường không
+  // ai bấm vào. Ai đọc rồi thì tự thu lại được.
+  const [showGuide, setShowGuide] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [previewingItem, setPreviewingItem] = useState<SavedHistoryItem | null>(null);
 
@@ -260,6 +269,87 @@ export const HeroGateway: React.FC<HeroGatewayProps> = ({
             Sao chép 1-click hoặc tải tệp .txt chuẩn xác. Tích hợp AI xoay vòng Key Pool không bị gián đoạn.
           </p>
         </div>
+      </section>
+
+      {/* Hướng dẫn cơ bản — mở sẵn, thu gọn được */}
+      <section className={`rounded-2xl border overflow-hidden ${
+        isDark ? "bg-slate-900/70 border-slate-800" : "bg-white border-sky-200 shadow-2xs"
+      }`}>
+        <button
+          id="btn-toggle-basic-guide"
+          type="button"
+          onClick={() => setShowGuide((v) => !v)}
+          className={`w-full flex items-center justify-between gap-2 px-4 py-3 text-left transition-colors cursor-pointer ${
+            isDark ? "hover:bg-slate-800/60" : "hover:bg-sky-50/70"
+          }`}
+        >
+          <span className="flex items-center gap-2 font-bold text-xs sm:text-sm">
+            <HelpCircle className="w-4 h-4 text-sky-500 shrink-0" />
+            Hướng dẫn cơ bản
+          </span>
+          <span className="flex items-center gap-1.5 text-[11px] opacity-60">
+            {showGuide ? "Thu gọn" : "Mở ra"}
+            {showGuide ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+          </span>
+        </button>
+
+        {showGuide && (
+          <div className={`px-4 pb-4 space-y-3 border-t ${
+            isDark ? "border-slate-800" : "border-sky-100"
+          }`}>
+            <ol className="space-y-2 pt-3 text-[11px] sm:text-xs leading-relaxed">
+              <li>
+                <strong className="text-sky-600 dark:text-sky-400">1. Tạo nhân vật.</strong>{" "}
+                Bấm <strong>Tạo Nhân Vật Mới</strong>, rồi đi lần lượt qua bốn thẻ trên thanh
+                tiêu đề: <em>1. Nhân vật</em> → <em>2. Thẻ Card</em> → <em>3. Template</em> →{" "}
+                <em>4. Xuất File</em>. Mỗi thẻ có nút chuyển sang bước kế ở cuối trang.
+              </li>
+              <li>
+                <strong className="text-sky-600 dark:text-sky-400">2. Nhờ AI viết hộ.</strong>{" "}
+                Mỗi mục đều có nút <strong>AI Gợi Ý</strong> — bấm để nhận vài phương án, chạm vào
+                phương án ưng ý là nó tự điền vào. Muốn tự viết thì gõ thẳng vào ô{" "}
+                <em>Mục khác / Chi tiết nội dung tự nhập</em>.
+              </li>
+              <li>
+                <strong className="text-sky-600 dark:text-sky-400">3. Lưu lại.</strong>{" "}
+                Nút <strong>Lưu Lịch Sử</strong> cất bản ghi vào trình duyệt của chính máy này.
+                Muốn giữ lâu dài hoặc mở trên máy khác thì lưu lên Google Drive.
+              </li>
+              <li>
+                <strong className="text-sky-600 dark:text-sky-400">4. Đem đi dùng.</strong>{" "}
+                Ở bước <em>4. Xuất File</em>, sao chép một chạm hoặc tải tệp .txt, rồi dán vào
+                AI roleplay bạn đang chơi.
+              </li>
+            </ol>
+
+            {/* Hai điều hay làm người dùng mắc kẹt nhất */}
+            <div className={`p-3 rounded-xl border space-y-2.5 ${
+              isDark ? "bg-amber-950/25 border-amber-800/50" : "bg-amber-50/70 border-amber-200"
+            }`}>
+              <div className="flex gap-2">
+                <Cloud className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                <p className="text-[11px] sm:text-xs leading-relaxed">
+                  <strong>Mỗi lần vào lại trang phải đăng nhập / cấp quyền Google Drive lại</strong>{" "}
+                  thì mới lưu lên Drive được. Phiên truy cập Drive không được giữ qua lần tải trang
+                  và chỉ sống một tiếng — đây là quy định của Google, không phải lỗi. Bấm biểu tượng
+                  Drive trên thanh tiêu đề để kiểm tra trước khi lưu, khỏi mất công gõ xong mới báo lỗi.
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <Cpu className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                <p className="text-[11px] sm:text-xs leading-relaxed">
+                  <strong>AI báo hết lượt thì bấm biểu tượng con chip</strong>{" "}
+                  <Cpu className="w-3 h-3 inline-block align-text-top text-indigo-500" /> trên thanh
+                  tiêu đề. Ở đó xem được còn bao nhiêu key dùng được và{" "}
+                  <span className="inline-flex items-center gap-1 font-semibold">
+                    <Clock className="w-3 h-3" />thời gian chờ còn lại
+                  </span>{" "}
+                  là bao lâu — thay vì bấm thử đi thử lại mà không biết phải đợi đến bao giờ.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* Main Section: Created Characters History & Continue Working */}
