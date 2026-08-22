@@ -179,6 +179,19 @@ function describeInvalidKey(key: string): string | null {
   if (trimmed.startsWith("AIza") && trimmed.length < 25)
     return "key dạng AIza nhưng quá ngắn, nhiều khả năng bị cắt lúc dán";
   if (trimmed.length < 20) return "quá ngắn để là API key, nhiều khả năng bị cắt lúc dán";
+
+  // Chỉ có trần DƯỚI mà không có trần TRÊN là một lỗ thật: dán cả danh sách key
+  // vào một biến chỉ nhận MỘT key sẽ tạo ra một "key" dài cả nghìn ký tự, lọt
+  // qua mọi bộ lọc rồi ăn 401 ở mọi lượt gọi mà không ai hiểu vì sao.
+  if (/\s/.test(trimmed))
+    return "chứa khoảng trắng ở giữa — nhiều khả năng là nhiều key bị dán liền vào một biến";
+  if (trimmed.length > MAX_KEY_LENGTH)
+    return (
+      `dài ${trimmed.length} ký tự, quá dài để là một key — nhiều khả năng là nhiều key ` +
+      "dán chung vào một biến. Dùng biến dạng danh sách (GEMINI_API_KEYS hoặc " +
+      "GEMINI_API_KEYS_RESERVE) để phân tách bằng dấu phẩy."
+    );
+
   return null;
 }
 
@@ -206,6 +219,13 @@ interface EnvKeyScan {
   /** Biến có giá trị trùng với một key đã đọc trước đó -> không tính thêm suất. */
   duplicateSources: string[];
 }
+
+/**
+ * Trần trên cho độ dài một key. Key thật dài 39 ký tự ("AIza...") hoặc khoảng
+ * 53 ("AQ...."). Để rộng tay phòng khi Google phát hành định dạng dài hơn,
+ * nhưng vẫn đủ chặt để bắt được cả danh sách bị dán vào một biến.
+ */
+const MAX_KEY_LENGTH = 200;
 
 /** Số thứ tự tối đa cho biến dạng GEMINI_API_KEY_<n>. Phải khớp `.env.example`. */
 const MAX_NUMBERED_KEYS = 50;
@@ -263,8 +283,11 @@ function scanEnvKeys(): EnvKeyScan {
   consider("GEMINI_API_KEY", process.env.GEMINI_API_KEY);
   considerList("GEMINI_API_KEYS", process.env.GEMINI_API_KEYS);
 
+  // Dùng considerList chứ không phải consider: biến đánh số vốn chỉ nhận một
+  // key, nhưng dán cả danh sách vào đó là chuyện xảy ra thật. Key thật không bao
+  // giờ chứa dấu phẩy nên tách ra luôn an toàn, và làm đúng ý người dùng.
   for (let i = 1; i <= MAX_NUMBERED_KEYS; i++) {
-    consider(`GEMINI_API_KEY_${i}`, process.env[`GEMINI_API_KEY_${i}`]);
+    considerList(`GEMINI_API_KEY_${i}`, process.env[`GEMINI_API_KEY_${i}`]);
   }
 
   /* ── Nhóm dự phòng: key người khác đóng góp, chỉ đụng khi hết đường ──
@@ -286,8 +309,8 @@ function scanEnvKeys(): EnvKeyScan {
   considerList("GEMINI_API_KEY_RESERVE", process.env.GEMINI_API_KEY_RESERVE);
 
   for (let i = 1; i <= MAX_NUMBERED_KEYS; i++) {
-    consider(`GEMINI_API_KEY_RESERVE_${i}`, process.env[`GEMINI_API_KEY_RESERVE_${i}`]);
-    consider(`GEMINI_API_KEYS_RESERVE_${i}`, process.env[`GEMINI_API_KEYS_RESERVE_${i}`]);
+    considerList(`GEMINI_API_KEY_RESERVE_${i}`, process.env[`GEMINI_API_KEY_RESERVE_${i}`]);
+    considerList(`GEMINI_API_KEYS_RESERVE_${i}`, process.env[`GEMINI_API_KEYS_RESERVE_${i}`]);
   }
 
   return { keys, reserveKeys, ignored, duplicateSources };
