@@ -273,13 +273,60 @@ function scanEnvKeys(): EnvKeyScan {
    * key của mình còn hơn đốt nhầm key của người ta.
    */
   group = "reserve";
+
+  /**
+   * Nhận CẢ HAI cách viết, số ít lẫn số nhiều.
+   *
+   * Biến đánh số bên nhóm chính là `GEMINI_API_KEY_1` (số ít) trong khi biến
+   * danh sách lại là `GEMINI_API_KEYS` (số nhiều), nên ghép nhầm thành
+   * `GEMINI_API_KEYS_RESERVE_1` là chuyện gần như chắc chắn xảy ra. Thà đọc cả
+   * hai còn hơn để một biến đã đặt đúng giá trị bị bỏ qua trong im lặng.
+   */
   considerList("GEMINI_API_KEYS_RESERVE", process.env.GEMINI_API_KEYS_RESERVE);
+  considerList("GEMINI_API_KEY_RESERVE", process.env.GEMINI_API_KEY_RESERVE);
 
   for (let i = 1; i <= MAX_NUMBERED_KEYS; i++) {
     consider(`GEMINI_API_KEY_RESERVE_${i}`, process.env[`GEMINI_API_KEY_RESERVE_${i}`]);
+    consider(`GEMINI_API_KEYS_RESERVE_${i}`, process.env[`GEMINI_API_KEYS_RESERVE_${i}`]);
   }
 
   return { keys, reserveKeys, ignored, duplicateSources };
+}
+
+/** Mọi tên biến môi trường mà `scanEnvKeys()` thực sự đọc. */
+function recognizedKeyEnvNames(): Set<string> {
+  const names = new Set([
+    "GEMINI_API_KEY",
+    "GEMINI_API_KEYS",
+    "GEMINI_API_KEY_RESERVE",
+    "GEMINI_API_KEYS_RESERVE",
+  ]);
+  for (let i = 1; i <= MAX_NUMBERED_KEYS; i++) {
+    names.add(`GEMINI_API_KEY_${i}`);
+    names.add(`GEMINI_API_KEY_RESERVE_${i}`);
+    names.add(`GEMINI_API_KEYS_RESERVE_${i}`);
+  }
+  return names;
+}
+
+/**
+ * Biến môi trường TRÔNG như biến chứa key nhưng không khớp tên nào code đọc.
+ *
+ * Đây là loại lỗi tệ nhất trong cả cơ chế này: người dùng dán key đúng, giá trị
+ * đúng, nhưng gõ sai một chữ trong TÊN biến — và không có gì báo lại, pool cứ
+ * hụt đi một cách bí ẩn. Cùng tinh thần với `ignoredKeys`: thà nói ra còn hơn
+ * im lặng bỏ qua.
+ *
+ * Lưu ý `GOOGLE_API_KEY` và `VITE_GEMINI_API_KEY` KHÔNG nằm trong danh sách hợp
+ * lệ ở repo này (chỉ openworld đọc chúng), nên đặt vào đây sẽ bị báo — đúng ý.
+ */
+function findUnreadKeyEnvVars(): string[] {
+  const known = recognizedKeyEnvNames();
+  return Object.keys(process.env)
+    .filter((name) => /^(GEMINI|GOOGLE)_API_KEY/i.test(name))
+    .filter((name) => !known.has(name))
+    .filter((name) => (process.env[name] || "").trim() !== "")
+    .sort();
 }
 
 /** Một key kèm vị trí của nó trong danh sách dùng được (để báo cáo cho khớp UI). */
@@ -854,6 +901,9 @@ export function getRotationStatus() {
     // vứt lặng lẽ: cắm 5 key, app chỉ thấy 2, không một dòng cảnh báo nào.
     ignoredKeys: ignored,
     duplicateKeySources: duplicateSources,
+    // Biến đặt sai TÊN nên không ai đọc. Rỗng là mọi biến đều được nhận đúng;
+    // có tên nào ở đây nghĩa là key trong đó đang nằm ngoài pool mà không hay.
+    unreadEnvVars: findUnreadKeyEnvVars(),
     // Kèm độ dài: key bị cắt lúc copy/dán vẫn qua được mọi bộ lọc định dạng rồi
     // ăn 401, và không có cách nào khác để nhìn ra. Độ dài không phải bí mật.
     // Số key mỗi nhóm. Nhóm dự phòng chỉ được đụng tới khi nhóm chính cạn sạch.
