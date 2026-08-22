@@ -118,7 +118,14 @@ export interface SavedHistoryItem {
   isFavorite?: boolean;
 }
 
-export type ActiveTab = "home" | "builder" | "card_preview" | "template_builder" | "full_preview" | "history";
+export type ActiveTab =
+  | "home"
+  | "builder"
+  | "card_preview"
+  | "template_builder"
+  | "full_preview"
+  | "guestbook"
+  | "history";
 
 export const DEFAULT_USER_PROFILE_FIELDS: UserProfileField[] = [
   { id: "name", label: "Tên", placeholder: "{{user}}", enabled: true },

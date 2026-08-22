@@ -14,6 +14,7 @@ import { TemplateBuilder } from "./components/TemplateBuilder";
 import { FullTemplatePreview } from "./components/FullTemplatePreview";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { HeroGateway } from "./components/HeroGateway";
+import { Guestbook } from "./components/Guestbook";
 import { VisitorCounter } from "./components/VisitorCounter";
 import { GoogleDriveModal } from "./components/GoogleDriveModal";
 import { SystemCommandsModal } from "./components/SystemCommandsModal";
@@ -411,6 +412,14 @@ export function App() {
           />
         )}
 
+        {activeTab === "guestbook" && (
+          <Guestbook
+            isDark={isDark}
+            currentUser={currentUser}
+            onToast={showToast}
+          />
+        )}
+
         {activeTab === "history" && (
           <HistoryDrawer
             historyItems={historyItems}
@@ -486,7 +495,17 @@ export function App() {
             <CloudIcon className="w-4 h-4 text-sky-400" />
             <span>Character Card & System Prompt Builder</span>
             <span>•</span>
-            <span className="font-semibold">© Hành tinh nhỏ của Cá Mèo</span>
+            {/* rel="noreferrer" đi kèm target="_blank": thiếu nó thì trang Facebook
+                mở ra có thể điều khiển ngược tab gốc qua window.opener */}
+            <a
+              href="https://www.facebook.com/profile.php?id=61589115178118"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Ghé thăm Facebook Hành tinh nhỏ của Cá Mèo"
+              className="font-semibold underline decoration-dotted underline-offset-2 hover:text-sky-500 transition-colors"
+            >
+              © Hành tinh nhỏ của Cá Mèo
+            </a>
           </div>
 
           <VisitorCounter isDark={isDark} />

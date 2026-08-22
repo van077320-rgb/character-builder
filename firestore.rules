@@ -1,6 +1,23 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    /**
+     * Quản trị viên: đăng thông báo, ẩn / xoá lưu bút.
+     *
+     * ⚠️ Danh sách email PHẢI KHỚP với `ADMIN_EMAILS` trong src/data/adminConfig.ts.
+     * Bên kia chỉ ẩn/hiện nút; đây mới là thứ thật sự chặn ghi.
+     *
+     * Bắt buộc `email_verified` vì Firebase cho phép nhiều cách đăng nhập gắn email
+     * chưa xác minh — thiếu điều kiện này thì người khác có thể tự tạo tài khoản
+     * mang đúng email admin ở một provider dễ dãi và ghi được.
+     */
+    function isAdmin() {
+      return request.auth != null
+             && request.auth.token.email_verified == true
+             && request.auth.token.email in ['van077320@gmail.com'];
+    }
+
     // Default catch-all
     match /{document=**} {
       allow read, write: if false;
@@ -9,13 +26,66 @@ service cloud.firestore {
     // Site visitor stats (read for all, safe increment)
     match /stats/{statId} {
       allow get: if statId == 'site_visitors';
-      allow create: if statId == 'site_visitors' 
-                    && request.resource.data.count is int 
+      allow create: if statId == 'site_visitors'
+                    && request.resource.data.count is int
                     && request.resource.data.count >= 0;
-      allow update: if statId == 'site_visitors' 
-                    && request.resource.data.count is int 
-                    && request.resource.data.count >= resource.data.count 
+      allow update: if statId == 'site_visitors'
+                    && request.resource.data.count is int
+                    && request.resource.data.count >= resource.data.count
                     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['count', 'lastVisitedAt']);
+    }
+
+    /**
+     * Hòm thư lưu bút — viết được mà KHÔNG cần đăng nhập.
+     *
+     * Không có `request.auth` để dựa vào, nên phần validate dưới đây là lớp duy
+     * nhất ngăn người ta nhét dữ liệu tuỳ ý vào database: đúng ba trường, đúng
+     * kiểu, đúng độ dài, và `createdAt` phải là giờ máy chủ (không cho tự khai
+     * giờ để nhảy lên đầu danh sách).
+     *
+     * Sửa các con số ở đây thì nhớ sửa GUESTBOOK_NAME_MAX / GUESTBOOK_MESSAGE_MAX
+     * trong src/guestbookService.ts cho khớp, kẻo người dùng gõ xong mới bị từ chối.
+     */
+    match /guestbook/{entryId} {
+      allow read: if true;
+
+      allow create: if request.resource.data.keys().hasOnly(['name', 'message', 'createdAt'])
+                    && request.resource.data.name is string
+                    && request.resource.data.name.size() > 0
+                    && request.resource.data.name.size() <= 40
+                    && request.resource.data.message is string
+                    && request.resource.data.message.size() > 0
+                    && request.resource.data.message.size() <= 800
+                    && request.resource.data.createdAt == request.time;
+
+      // Chỉ admin được ẩn hoặc xoá. Khách không sửa được cả bài của chính mình —
+      // đổi lại là không ai sửa được bài của người khác.
+      allow update, delete: if isAdmin();
+    }
+
+    /**
+     * Thông báo chạy trên trang chủ: ai cũng đọc, chỉ admin ghi.
+     *
+     * `expiresAt` là mốc tự ẩn, cho phép null (chạy tới khi admin tự tắt). Dùng
+     * `get('expiresAt', null)` chứ không truy cập thẳng: bản ghi cũ đăng trước khi
+     * có tính năng này không hề có trường đó, mà đọc một khoá không tồn tại thì
+     * Rules coi là lỗi và chặn luôn cả thao tác hợp lệ.
+     */
+    match /announcements/{announcementId} {
+      allow read: if true;
+
+      allow create: if isAdmin()
+                    && request.resource.data.keys().hasOnly(['text', 'tone', 'active', 'createdAt', 'expiresAt'])
+                    && request.resource.data.text is string
+                    && request.resource.data.text.size() > 0
+                    && request.resource.data.text.size() <= 300
+                    && request.resource.data.tone in ['info', 'new', 'warn']
+                    && request.resource.data.active is bool
+                    && request.resource.data.createdAt == request.time
+                    && (request.resource.data.get('expiresAt', null) == null
+                        || request.resource.data.get('expiresAt', null) is timestamp);
+
+      allow update, delete: if isAdmin();
     }
 
     // Authenticated user data

@@ -11,11 +11,31 @@ import {
   Terminal,
   Cpu,
   UserCheck,
-  LogIn
+  LogIn,
+  Mail
 } from "lucide-react";
 import { ActiveTab } from "../types";
 import { StarIcon } from "./CloudStarDecorations";
 import { User } from "../firebase";
+
+/**
+ * Năm thẻ điều hướng chính.
+ *
+ * `shortLabel` dùng cho màn hình hẹp — chỗ đó năm cột chia nhau chưa tới 60px một
+ * ô, nên phải bỏ số thứ tự đi thì chữ mới không bị cắt cụt thành "1. Nhân...".
+ */
+const NAV_TABS: {
+  tab: ActiveTab;
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  shortLabel: string;
+}[] = [
+  { tab: "builder", icon: BookOpen, label: "1. Nhân vật", shortLabel: "Nhân vật" },
+  { tab: "card_preview", icon: FileText, label: "2. Thẻ Card", shortLabel: "Thẻ Card" },
+  { tab: "template_builder", icon: Layers, label: "3. Template", shortLabel: "Template" },
+  { tab: "full_preview", icon: Download, label: "4. Xuất File", shortLabel: "Xuất File" },
+  { tab: "guestbook", icon: Mail, label: "5. Lưu bút", shortLabel: "Lưu bút" },
+];
 
 interface HeaderProps {
   activeTab: ActiveTab;
@@ -194,76 +214,33 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         </div>
 
-        {/* 4 Navigation Tabs - Responsive Grid that fits 100% of any mobile screen width */}
+        {/* 5 Navigation Tabs - Responsive Grid that fits 100% of any mobile screen width */}
         <div className="mt-1.5 sm:mt-2.5">
-          <nav className="grid grid-cols-4 gap-1 sm:flex sm:items-center sm:gap-2 w-full text-[10px] xs:text-xs sm:text-sm font-medium">
-            <button
-              id="tab-btn-builder"
-              onClick={() => setActiveTab("builder")}
-              className={`flex items-center justify-center gap-1 px-1 py-1.5 sm:px-3 sm:py-1.5 rounded-lg transition-colors border text-center ${
-                activeTab === "builder"
-                  ? isDark
-                    ? "bg-sky-600 text-white border-sky-500 shadow-xs"
-                    : "bg-sky-500 text-white border-sky-500 shadow-xs"
-                  : isDark
-                    ? "bg-slate-800/60 border-slate-700/60 text-slate-300 hover:bg-slate-800"
-                    : "bg-white/80 border-sky-200 text-slate-700 hover:bg-sky-100/70"
-              }`}
-            >
-              <BookOpen className="w-3 h-3 xs:w-3.5 xs:h-3.5 shrink-0" />
-              <span className="truncate">1. Nhân vật</span>
-            </button>
-
-            <button
-              id="tab-btn-card-preview"
-              onClick={() => setActiveTab("card_preview")}
-              className={`flex items-center justify-center gap-1 px-1 py-1.5 sm:px-3 sm:py-1.5 rounded-lg transition-colors border text-center ${
-                activeTab === "card_preview"
-                  ? isDark
-                    ? "bg-sky-600 text-white border-sky-500 shadow-xs"
-                    : "bg-sky-500 text-white border-sky-500 shadow-xs"
-                  : isDark
-                    ? "bg-slate-800/60 border-slate-700/60 text-slate-300 hover:bg-slate-800"
-                    : "bg-white/80 border-sky-200 text-slate-700 hover:bg-sky-100/70"
-              }`}
-            >
-              <FileText className="w-3 h-3 xs:w-3.5 xs:h-3.5 shrink-0" />
-              <span className="truncate">2. Thẻ Card</span>
-            </button>
-
-            <button
-              id="tab-btn-template-builder"
-              onClick={() => setActiveTab("template_builder")}
-              className={`flex items-center justify-center gap-1 px-1 py-1.5 sm:px-3 sm:py-1.5 rounded-lg transition-colors border text-center ${
-                activeTab === "template_builder"
-                  ? isDark
-                    ? "bg-sky-600 text-white border-sky-500 shadow-xs"
-                    : "bg-sky-500 text-white border-sky-500 shadow-xs"
-                  : isDark
-                    ? "bg-slate-800/60 border-slate-700/60 text-slate-300 hover:bg-slate-800"
-                    : "bg-white/80 border-sky-200 text-slate-700 hover:bg-sky-100/70"
-              }`}
-            >
-              <Layers className="w-3 h-3 xs:w-3.5 xs:h-3.5 shrink-0" />
-              <span className="truncate">3. Template</span>
-            </button>
-
-            <button
-              id="tab-btn-full-preview"
-              onClick={() => setActiveTab("full_preview")}
-              className={`flex items-center justify-center gap-1 px-1 py-1.5 sm:px-3 sm:py-1.5 rounded-lg transition-colors border text-center ${
-                activeTab === "full_preview"
-                  ? isDark
-                    ? "bg-sky-600 text-white border-sky-500 shadow-xs"
-                    : "bg-sky-500 text-white border-sky-500 shadow-xs"
-                  : isDark
-                    ? "bg-slate-800/60 border-slate-700/60 text-slate-300 hover:bg-slate-800"
-                    : "bg-white/80 border-sky-200 text-slate-700 hover:bg-sky-100/70"
-              }`}
-            >
-              <Download className="w-3 h-3 xs:w-3.5 xs:h-3.5 shrink-0" />
-              <span className="truncate">4. Xuất File</span>
-            </button>
+          <nav className="grid grid-cols-5 gap-1 sm:flex sm:items-center sm:gap-2 w-full text-[10px] sm:text-sm font-medium">
+            {NAV_TABS.map(({ tab, icon: Icon, shortLabel, label }) => (
+              <button
+                key={tab}
+                id={`tab-btn-${tab.replace(/_/g, "-")}`}
+                onClick={() => setActiveTab(tab)}
+                title={label}
+                className={`flex items-center justify-center gap-1 px-1 py-1.5 sm:px-3 sm:py-1.5 rounded-lg transition-colors border text-center ${
+                  activeTab === tab
+                    ? isDark
+                      ? "bg-sky-600 text-white border-sky-500 shadow-xs"
+                      : "bg-sky-500 text-white border-sky-500 shadow-xs"
+                    : isDark
+                      ? "bg-slate-800/60 border-slate-700/60 text-slate-300 hover:bg-slate-800"
+                      : "bg-white/80 border-sky-200 text-slate-700 hover:bg-sky-100/70"
+                }`}
+              >
+                {/* Năm cột trên màn hình điện thoại thì mỗi ô chỉ còn ~60px:
+                    giấu biểu tượng và bỏ số thứ tự đi thì chữ mới đọc được,
+                    thứ tự các bước vẫn nhìn ra nhờ vị trí trái sang phải. */}
+                <Icon className="w-3.5 h-3.5 shrink-0 hidden sm:inline-block" />
+                <span className="truncate sm:hidden">{shortLabel}</span>
+                <span className="truncate hidden sm:inline">{label}</span>
+              </button>
+            ))}
           </nav>
         </div>
       </div>

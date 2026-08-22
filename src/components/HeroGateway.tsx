@@ -27,6 +27,7 @@ import { SavedHistoryItem, CharacterData } from "../types";
 import { StarIcon, FourPointStar, CloudIcon, CloudBannerDecoration } from "./CloudStarDecorations";
 import { buildCharacterCardText, buildFullTemplateText } from "../data/templateConstants";
 import { ConfirmDeleteModal } from "./ConfirmDeleteModal";
+import { AnnouncementTicker } from "./AnnouncementTicker";
 
 interface HeroGatewayProps {
   onStartNewCharacter: () => void;
@@ -118,6 +119,9 @@ export const HeroGateway: React.FC<HeroGatewayProps> = ({
         {/* Ambient background glow & stars */}
         <div className="absolute top-0 right-0 -mr-16 -mt-16 w-64 h-64 rounded-full bg-sky-400/10 blur-3xl pointer-events-none" />
         <div className="absolute bottom-0 left-0 -ml-16 -mb-16 w-64 h-64 rounded-full bg-indigo-500/10 blur-3xl pointer-events-none" />
+
+        {/* Băng thông báo — tự ẩn khi không có thông báo nào đang bật */}
+        <AnnouncementTicker isDark={isDark} />
 
         <div className="relative z-10 max-w-3xl">
           {/* Badge */}
@@ -300,8 +304,8 @@ export const HeroGateway: React.FC<HeroGatewayProps> = ({
             <ol className="space-y-2 pt-3 text-[11px] sm:text-xs leading-relaxed">
               <li>
                 <strong className="text-sky-600 dark:text-sky-400">1. Tạo nhân vật.</strong>{" "}
-                Bấm <strong>Tạo Nhân Vật Mới</strong>, rồi đi lần lượt qua bốn thẻ trên thanh
-                tiêu đề: <em>1. Nhân vật</em> → <em>2. Thẻ Card</em> → <em>3. Template</em> →{" "}
+                Bấm <strong>Tạo Nhân Vật Mới</strong>, rồi đi lần lượt qua bốn thẻ đầu trên
+                thanh tiêu đề: <em>1. Nhân vật</em> → <em>2. Thẻ Card</em> → <em>3. Template</em> →{" "}
                 <em>4. Xuất File</em>. Mỗi thẻ có nút chuyển sang bước kế ở cuối trang.
               </li>
               <li>
@@ -319,6 +323,11 @@ export const HeroGateway: React.FC<HeroGatewayProps> = ({
                 <strong className="text-sky-600 dark:text-sky-400">4. Đem đi dùng.</strong>{" "}
                 Ở bước <em>4. Xuất File</em>, sao chép một chạm hoặc tải tệp .txt, rồi dán vào
                 AI roleplay bạn đang chơi.
+              </li>
+              <li>
+                <strong className="text-sky-600 dark:text-sky-400">5. Để lại lưu bút.</strong>{" "}
+                Thẻ <em>5. Lưu bút</em> là hòm thư chung — viết cảm nhận hay góp ý đều được,{" "}
+                <strong>không cần đăng nhập</strong>, để trống ô tên là thành ẩn danh.
               </li>
             </ol>
 

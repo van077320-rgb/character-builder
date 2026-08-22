@@ -7,6 +7,7 @@ và đồng bộ file lên Google Drive.
 - Hỗ trợ **1–10 nhân vật** trong cùng một prompt, tự chèn `CHARACTER CONSISTENCY RULE` khi có từ 2 nhân vật trở lên
 - Lịch sử lưu trong trình duyệt, sao lưu ra file JSON hoặc Google Drive
 - Xoay vòng nhiều API key Gemini + tự hạ model dự phòng khi hết quota
+- **Hòm thư lưu bút** ẩn danh (không cần đăng nhập) + **băng thông báo** chạy trên trang chủ
 
 ---
 
@@ -117,7 +118,7 @@ Bốn bước sau làm trên Console, theo đúng thứ tự:
 
 1. **Firestore Database** → Create database (production mode) → tab **Rules** dán
    [firestore.rules](firestore.rules) → Publish.
-   *Bỏ qua bước này thì bộ đếm khách bị 403.*
+   *Bỏ qua bước này thì bộ đếm khách bị 403, và tab Lưu bút báo "Không được phép đọc hòm thư".*
 2. **Authentication → Sign-in method** → bật **Google**.
 3. **Bật Google Drive API** cho **đúng project của Firebase** (không phải project Cloud khác).
 4. **OAuth consent screen → Publish app.** App chỉ xin `drive.file` + `email`/`profile`/`openid`
@@ -133,6 +134,57 @@ Quên bước này thì app tự báo lỗi kèm nút copy domain và link tới
 
 ---
 
+## Hòm thư lưu bút & Thông báo
+
+**Lưu bút (thẻ `5. Lưu bút`)** — khách viết được mà không cần đăng nhập bất cứ tài khoản
+nào. Bản ghi nằm ở collection `guestbook`.
+
+Vì không có đăng nhập nên **không có `request.auth` để dựa vào**, và phần validate trong
+[firestore.rules](firestore.rules) là lớp DUY NHẤT ngăn người ta nhét dữ liệu tuỳ ý vào
+database: đúng ba trường `name` / `message` / `createdAt`, đúng kiểu, đúng độ dài, và
+`createdAt` bắt buộc là giờ máy chủ (không cho tự khai giờ để nhảy lên đầu danh sách).
+Cooldown 60 giây trong [guestbookService.ts](src/guestbookService.ts) chỉ chặn bấm nhầm
+hai lần — **đừng nhầm nó là bảo mật**, xoá localStorage là qua.
+
+> Sửa giới hạn độ dài thì phải sửa **cả hai chỗ**: `GUESTBOOK_NAME_MAX` /
+> `GUESTBOOK_MESSAGE_MAX` trong service, và con số tương ứng trong Rules. Lệch nhau thì
+> người viết gõ xong mới nhận một dòng "permission-denied" mà không hiểu vì sao.
+
+**Thông báo chạy trên trang chủ** — collection `announcements`, ai cũng đọc, chỉ admin ghi.
+Băng chữ tự ẩn hoàn toàn khi không có thông báo nào đang bật, kể cả lúc Firestore lỗi:
+một dòng báo lỗi đỏ nằm giữa banner chào mừng chỉ làm người dùng hoang mang.
+
+Mỗi thông báo có thể đặt **hạn tự ẩn** (`expiresAt`, cho phép `null` = chạy tới khi admin
+tự tắt). Hạn được so với **đồng hồ máy người xem**, không phải giờ máy chủ — máy ai chỉnh
+sai ngày thì thấy lệch, đổi lại là không tốn thêm lượt đọc Firestore chỉ để hỏi giờ.
+Băng chạy tính lại mỗi phút nên thông báo hết hạn tự rụng mà không cần tải lại trang.
+
+> Bản ghi đăng từ trước khi có tính năng này **không hề có trường `expiresAt`**. Vì vậy
+> Rules đọc nó bằng `get('expiresAt', null)` — truy cập thẳng vào một khoá không tồn tại
+> thì Rules coi là lỗi và chặn luôn cả thao tác hợp lệ.
+
+### Quyền admin
+
+Admin = **email Google nằm trong danh sách**, không phải mật khẩu giấu trong code.
+
+| Nơi khai báo | Vai trò |
+|---|---|
+| [src/data/adminConfig.ts](src/data/adminConfig.ts) → `ADMIN_EMAILS` | Ẩn / hiện bảng quản trị trên giao diện |
+| [firestore.rules](firestore.rules) → `isAdmin()` | **Chặn thật.** Không có dòng này thì ai cũng ghi được |
+
+**Hai chỗ phải khớp nhau.** Sửa một bên quên bên kia sẽ ra một trong hai cảnh: admin thấy
+nút nhưng bấm bị "Không được phép", hoặc người lạ thấy bảng quản trị (bấm vẫn không ghi được).
+Đổi Rules xong nhớ **Publish** lại trên Console.
+
+Cách dùng: bấm nút **Google Drive** trên thanh tiêu đề để đăng nhập bằng email admin →
+mở thẻ **5. Lưu bút** → bảng quản trị hiện ở đầu trang. Ở đó đăng thông báo mới, bật/tắt
+thông báo cũ, và ẩn / xoá từng lưu bút.
+
+> "Ẩn" chỉ là ẩn khỏi giao diện — dữ liệu vẫn đọc được qua SDK vì Rules cho phép đọc công
+> khai cả collection. Muốn mất hẳn thì phải **Xoá**.
+
+---
+
 ## Cấu trúc
 
 ```
@@ -143,6 +195,10 @@ src/
                     draftState.ts         ← nhận biết bản nháp chưa lưu
                     safeStorage.ts        ← đọc localStorage an toàn
                     googleConsole.ts      ← link Console sinh từ projectId
+                    adminConfig.ts        ← email admin, PHẢI khớp firestore.rules
+                    firestoreErrors.ts    ← dịch lỗi Firestore sang việc cần làm
+  guestbookService.ts     ← hòm thư lưu bút (ghi được khi chưa đăng nhập)
+  announcementService.ts  ← thông báo chạy trang chủ (chỉ admin ghi)
   server/           geminiRotationService.ts ← xoay key + hạ model
 shared/             aiContracts.ts        ← prompt & shape response DÙNG CHUNG
                     characterFields.ts    ← 47 trường hợp lệ của thẻ nhân vật

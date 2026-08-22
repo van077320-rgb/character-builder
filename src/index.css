@@ -1,5 +1,53 @@
 @import "tailwindcss";
 
+/* ────────────────────────────────────────────────────────────
+ * Băng thông báo chạy ngang trên trang chủ.
+ *
+ * Nội dung được lặp lại HAI lần trong `.marquee-track`, và animation chỉ chạy
+ * đúng -50% — tức là vừa hết bản sao thứ nhất thì khung hình trùng khít với điểm
+ * xuất phát, nên vòng lặp không có khoảng trắng nhảy giật.
+ * ──────────────────────────────────────────────────────────── */
+@keyframes marquee-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+.marquee-viewport {
+  overflow: hidden;
+  /* Mờ dần hai mép để chữ trôi ra/vào chứ không bị cắt cụt */
+  mask-image: linear-gradient(to right, transparent, #000 3rem, #000 calc(100% - 3rem), transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 3rem, #000 calc(100% - 3rem), transparent);
+}
+
+.marquee-track {
+  display: flex;
+  width: max-content;
+  animation: marquee-scroll linear infinite;
+  /* Thời lượng đặt qua inline style, tính theo độ dài chữ — thông báo dài mà chạy
+     cùng tốc độ với thông báo ngắn thì lướt quá nhanh, không kịp đọc. */
+}
+
+/* Rê chuột vào để đọc kỹ */
+.marquee-viewport:hover .marquee-track {
+  animation-play-state: paused;
+}
+
+/* Người bật "giảm chuyển động" trong hệ điều hành: đứng yên, cho xuống dòng bình thường */
+@media (prefers-reduced-motion: reduce) {
+  .marquee-viewport {
+    mask-image: none;
+    -webkit-mask-image: none;
+  }
+  .marquee-track {
+    animation: none;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .marquee-track > *:nth-child(2) {
+    display: none;
+  }
+}
+
 /* Ẩn triệt để huy hiệu Netlify Badge & Drawer */
 netlify-drawer,
 #netlify-drawer,
